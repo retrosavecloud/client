@@ -1,0 +1,27 @@
+[package]
+name = "retrosave-shared"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Shared types and utilities for Retrosave"
+
+[dependencies]
+# Workspace dependencies
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+ring.workspace = true
+base64.workspace = true
+zstd.workspace = true
+
+# Additional shared dependencies
+uuid = { version = "1.11", features = ["v4", "serde"] }
+strum = { version = "0.26", features = ["derive"] }
+strum_macros = "0.26"
+
+[dev-dependencies]
+proptest.workspace = true
