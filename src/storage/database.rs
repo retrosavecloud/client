@@ -1,8 +1,8 @@
 use anyhow::{Result, Context};
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions, Row};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use chrono::{DateTime, Utc};
-use tracing::{info, debug, error};
+use tracing::{info, debug};
 use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

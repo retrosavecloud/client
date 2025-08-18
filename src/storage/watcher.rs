@@ -196,7 +196,7 @@ impl SaveWatcher {
         }
     }
     
-    fn extract_game_name(path: &Path, save_dir: &Path) -> String {
+    fn extract_game_name(path: &Path, _save_dir: &Path) -> String {
         // Try to extract game name from file name or directory structure
         if let Some(file_name) = path.file_stem() {
             let name = file_name.to_string_lossy();

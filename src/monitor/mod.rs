@@ -67,7 +67,7 @@ pub async fn start_monitoring_with_commands(
                     MonitorCommand::TriggerManualSave => {
                         info!("Manual save triggered");
                         // Force save detection for all tracked saves
-                        if let Some(watcher) = &save_watcher {
+                        if let Some(_watcher) = &save_watcher {
                             // TODO: Implement force save in watcher
                             info!("Checking all save files for changes...");
                         } else {

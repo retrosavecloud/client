@@ -3,7 +3,7 @@ use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     TrayIconBuilder, TrayIconEvent,
 };
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use notify_rust::{Notification, Timeout};
