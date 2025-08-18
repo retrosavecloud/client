@@ -34,19 +34,21 @@ async fn main() -> Result<()> {
     tray.init()?;
     info!("System tray initialized");
 
-    // Create channel for monitor to tray communication
+    // Create channels for monitor communication
     let (monitor_sender, mut monitor_receiver) = mpsc::channel::<monitor::MonitorEvent>(100);
+    let (cmd_sender, cmd_receiver) = mpsc::channel::<monitor::MonitorCommand>(10);
 
-    // Start process monitoring with database
+    // Start process monitoring with database and command channel
     let db_clone = db.clone();
     let monitor_handle = tokio::spawn(async move {
-        if let Err(e) = monitor::start_monitoring_with_db(monitor_sender, db_clone).await {
+        if let Err(e) = monitor::start_monitoring_with_commands(monitor_sender, db_clone, cmd_receiver).await {
             error!("Monitor error: {}", e);
         }
     });
 
     // Handle monitor events and update tray
     let tray_clone = tray.clone();
+    let cmd_sender_clone = cmd_sender.clone();
     let event_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -75,7 +77,16 @@ async fn main() -> Result<()> {
                 }
                 Some(tray_msg) = tray_receiver.recv() => {
                     debug!("Tray message received: {:?}", tray_msg);
-                    // Handle tray-specific messages if needed
+                    // Handle tray-specific messages
+                    match tray_msg {
+                        ui::tray::TrayMessage::ManualSaveRequested => {
+                            info!("Manual save requested by user");
+                            let _ = cmd_sender_clone.send(monitor::MonitorCommand::TriggerManualSave).await;
+                        }
+                        _ => {
+                            // Other messages are handled by the tray itself
+                        }
+                    }
                 }
             }
         }

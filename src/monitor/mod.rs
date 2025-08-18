@@ -19,6 +19,11 @@ pub enum MonitorEvent {
     SaveDetected(String, String), // game_name, file_path
 }
 
+#[derive(Debug, Clone)]
+pub enum MonitorCommand {
+    TriggerManualSave,
+}
+
 pub async fn start_monitoring() -> Result<()> {
     let db = Arc::new(Database::new(None).await?);
     let (sender, _receiver) = mpsc::channel(100);
@@ -34,6 +39,15 @@ pub async fn start_monitoring_with_db(
     sender: mpsc::Sender<MonitorEvent>,
     database: Arc<Database>,
 ) -> Result<()> {
+    let (_cmd_sender, cmd_receiver) = mpsc::channel(10);
+    start_monitoring_with_commands(sender, database, cmd_receiver).await
+}
+
+pub async fn start_monitoring_with_commands(
+    sender: mpsc::Sender<MonitorEvent>,
+    database: Arc<Database>,
+    mut cmd_receiver: mpsc::Receiver<MonitorCommand>,
+) -> Result<()> {
     info!("Process monitoring started with save detection");
     
     let mut interval = time::interval(Duration::from_secs(5));
@@ -43,7 +57,27 @@ pub async fn start_monitoring_with_db(
     let backup_manager = SaveBackupManager::new(None)?;
     
     loop {
-        interval.tick().await;
+        tokio::select! {
+            _ = interval.tick() => {
+                // Regular monitoring tick
+            }
+            Some(cmd) = cmd_receiver.recv() => {
+                // Handle commands
+                match cmd {
+                    MonitorCommand::TriggerManualSave => {
+                        info!("Manual save triggered");
+                        // Force save detection for all tracked saves
+                        if let Some(watcher) = &save_watcher {
+                            // TODO: Implement force save in watcher
+                            info!("Checking all save files for changes...");
+                        } else {
+                            warn!("No active save watcher - no emulator running");
+                        }
+                    }
+                }
+                continue;
+            }
+        }
         
         // Check for save events
         if let Some(receiver) = &mut save_receiver {

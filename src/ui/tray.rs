@@ -18,6 +18,7 @@ pub enum TrayMessage {
     GameDetected(String),
     SaveDetected(String),
     UpdateStatus(String),
+    ManualSaveRequested,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,13 @@ impl SystemTray {
         // Separator
         menu.append(&PredefinedMenuItem::separator())?;
         
+        // Save Now item
+        let save_now_item = MenuItem::new("Save Now", true, None);
+        menu.append(&save_now_item)?;
+        
+        // Separator
+        menu.append(&PredefinedMenuItem::separator())?;
+        
         // Settings item
         let settings_item = MenuItem::new("Settings", true, None);
         menu.append(&settings_item)?;
@@ -74,6 +82,7 @@ impl SystemTray {
         
         // Store menu item IDs for the event handler
         let exit_id = exit_item.id().clone();
+        let save_now_id = save_now_item.id().clone();
         let settings_id = settings_item.id().clone();
         let about_id = about_item.id().clone();
         
@@ -84,6 +93,9 @@ impl SystemTray {
             .with_tooltip("Retrosave - Monitoring")
             .with_icon(icon)
             .build()?;
+        
+        // Clone sender for the menu handler
+        let menu_sender = self.sender.clone();
         
         // Handle menu events in a separate task
         std::thread::spawn(move || {
@@ -96,6 +108,9 @@ impl SystemTray {
                     if event.id == exit_id {
                         info!("Exit requested from tray menu");
                         std::process::exit(0);
+                    } else if event.id == save_now_id {
+                        info!("Manual save requested from tray menu");
+                        let _ = menu_sender.blocking_send(TrayMessage::ManualSaveRequested);
                     } else if event.id == settings_id {
                         info!("Settings clicked - not implemented yet");
                     } else if event.id == about_id {
