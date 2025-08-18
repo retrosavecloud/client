@@ -7,6 +7,10 @@ use tracing::{debug, error, info};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
+// GTK initialization on Linux
+#[cfg(target_os = "linux")]
+extern crate gtk;
+
 #[derive(Debug, Clone)]
 pub enum TrayMessage {
     EmulatorDetected(String),
@@ -36,6 +40,12 @@ impl SystemTray {
     
     pub fn init(&self) -> Result<()> {
         info!("Initializing system tray");
+        
+        // Initialize GTK on Linux
+        #[cfg(target_os = "linux")]
+        {
+            gtk::init().expect("Failed to initialize GTK");
+        }
         
         // Create menu
         let menu = Menu::new();

@@ -58,8 +58,8 @@ impl Database {
 
         info!("Opening database at: {:?}", db_path);
 
-        // Create connection pool
-        let db_url = format!("sqlite:{}", db_path.display());
+        // Create connection pool with create_if_missing
+        let db_url = format!("sqlite:{}?mode=rwc", db_path.display());
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect(&db_url)

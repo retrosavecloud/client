@@ -54,7 +54,13 @@ pub fn get_pcsx2_save_directory() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         if let Ok(home) = std::env::var("HOME") {
-            // Check new location first
+            // Check Flatpak location first (most common nowadays)
+            let flatpak_path = format!("{}/.var/app/net.pcsx2.PCSX2/config/PCSX2/memcards", home);
+            if std::path::Path::new(&flatpak_path).exists() {
+                return Some(flatpak_path);
+            }
+            
+            // Check new location
             let save_path = format!("{}/.config/PCSX2/memcards", home);
             if std::path::Path::new(&save_path).exists() {
                 return Some(save_path);

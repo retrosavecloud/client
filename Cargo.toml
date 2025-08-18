@@ -61,6 +61,7 @@ winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "handlea
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11 = "2.21"
+gtk = "0.18"
 
 [[bin]]
 name = "retrosave"
