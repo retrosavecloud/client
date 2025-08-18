@@ -13,6 +13,8 @@ pub struct Settings {
     pub minimize_to_tray: bool,
     pub show_notifications: bool,
     pub cloud_sync_enabled: bool,
+    pub hotkey_enabled: bool,
+    pub save_hotkey: Option<String>,
 }
 
 impl Default for Settings {
@@ -25,6 +27,8 @@ impl Default for Settings {
             minimize_to_tray: true,
             show_notifications: true,
             cloud_sync_enabled: false,
+            hotkey_enabled: true,
+            save_hotkey: Some("Ctrl+Shift+S".to_string()),
         }
     }
 }
@@ -61,12 +65,13 @@ impl SettingsWindow {
     
     fn run_window(
         settings: Arc<Mutex<Settings>>,
-        mut command_receiver: mpsc::Receiver<SettingsCommand>,
+        command_receiver: mpsc::Receiver<SettingsCommand>,
     ) -> Result<()> {
         // Wait for the first Show command before creating the window
         let runtime = tokio::runtime::Runtime::new()?;
         
         runtime.block_on(async move {
+            let mut command_receiver = command_receiver;
             // Wait for first show command
             info!("Settings window thread waiting for first show command");
             loop {
@@ -272,6 +277,37 @@ impl eframe::App for SettingsApp {
             ui.checkbox(&mut settings.start_on_boot, "Start Retrosave on system boot");
             ui.checkbox(&mut settings.minimize_to_tray, "Minimize to system tray");
             ui.checkbox(&mut settings.show_notifications, "Show notifications");
+            
+            ui.separator();
+            
+            // Hotkey Settings
+            ui.label("Hotkey Settings");
+            ui.checkbox(&mut settings.hotkey_enabled, "Enable global hotkeys");
+            
+            if settings.hotkey_enabled {
+                ui.horizontal(|ui| {
+                    ui.label("Save Now hotkey:");
+                    
+                    let mut hotkey_text = settings.save_hotkey.clone().unwrap_or_else(|| "Not set".to_string());
+                    let response = ui.text_edit_singleline(&mut hotkey_text);
+                    
+                    if response.changed() {
+                        // Update the hotkey when text changes
+                        if hotkey_text.is_empty() || hotkey_text == "Not set" {
+                            settings.save_hotkey = None;
+                        } else {
+                            settings.save_hotkey = Some(hotkey_text);
+                        }
+                    }
+                    
+                    if ui.button("Clear").clicked() {
+                        settings.save_hotkey = None;
+                    }
+                });
+                
+                ui.label("Format: Ctrl+Shift+S, Alt+F5, etc.");
+                ui.label("The hotkey will trigger a manual save while in-game.");
+            }
             
             ui.separator();
             

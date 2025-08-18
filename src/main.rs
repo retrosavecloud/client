@@ -7,9 +7,11 @@ mod monitor;
 mod emulators;
 mod ui;
 mod storage;
+mod hotkey;
 
 use ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager};
 use storage::Database;
+use hotkey::{HotkeyManager, HotkeyEvent};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -42,6 +44,19 @@ async fn main() -> Result<()> {
     // Create channels for monitor communication
     let (monitor_sender, mut monitor_receiver) = mpsc::channel::<monitor::MonitorEvent>(100);
     let (cmd_sender, cmd_receiver) = mpsc::channel::<monitor::MonitorCommand>(10);
+    
+    // Create hotkey manager
+    let (hotkey_sender, mut hotkey_receiver) = mpsc::channel::<HotkeyEvent>(100);
+    let hotkey_manager = Arc::new(HotkeyManager::new(hotkey_sender)?);
+    
+    // Set up initial hotkey from settings
+    let settings = settings_window.get_settings();
+    if settings.hotkey_enabled {
+        hotkey_manager.set_save_hotkey(settings.save_hotkey.clone())?;
+    }
+    
+    // Start hotkey listener
+    hotkey_manager.clone().start_listening();
 
     // Start process monitoring with database and command channel
     let db_clone = db.clone();
@@ -55,9 +70,20 @@ async fn main() -> Result<()> {
     let cmd_sender_clone = cmd_sender.clone();
     let settings_window_clone = settings_window.clone();
     let _notif_manager_clone = notif_manager.clone();
+    let cmd_sender_hotkey = cmd_sender.clone();
+    let hotkey_manager_clone = hotkey_manager.clone();
     let event_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
+                Some(hotkey_event) = hotkey_receiver.recv() => {
+                    match hotkey_event {
+                        HotkeyEvent::SaveNow => {
+                            info!("Hotkey triggered: Save Now");
+                            tray.show_notification("Manual Save", "Save triggered by hotkey");
+                            let _ = cmd_sender_hotkey.send(monitor::MonitorCommand::TriggerManualSave).await;
+                        }
+                    }
+                }
                 Some(event) = monitor_receiver.recv() => {
                     match event {
                         monitor::MonitorEvent::EmulatorStarted(name) => {
@@ -98,6 +124,13 @@ async fn main() -> Result<()> {
                                     error!("Failed to show settings window: {}", e);
                                 }
                             });
+                        }
+                        ui::tray::TrayMessage::HotkeyChanged(new_hotkey) => {
+                            info!("Hotkey changed to: {:?}", new_hotkey);
+                            // Update the hotkey manager
+                            if let Err(e) = hotkey_manager_clone.set_save_hotkey(new_hotkey) {
+                                error!("Failed to update hotkey: {}", e);
+                            }
                         }
                         _ => {
                             // Other messages are handled by the tray itself
