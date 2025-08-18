@@ -8,7 +8,7 @@ mod emulators;
 mod ui;
 mod storage;
 
-use ui::{SystemTray, tray::TrayMessage};
+use ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager};
 use storage::Database;
 use std::sync::Arc;
 
@@ -34,6 +34,12 @@ async fn main() -> Result<()> {
     tray.init()?;
     info!("System tray initialized");
 
+    // Create settings window (but don't show it yet)
+    let settings_window = Arc::new(SettingsWindow::new());
+
+    // Create notification manager
+    let notif_manager = Arc::new(NotificationManager::new());
+
     // Create channels for monitor communication
     let (monitor_sender, mut monitor_receiver) = mpsc::channel::<monitor::MonitorEvent>(100);
     let (cmd_sender, cmd_receiver) = mpsc::channel::<monitor::MonitorCommand>(10);
@@ -49,6 +55,8 @@ async fn main() -> Result<()> {
     // Handle monitor events and update tray
     let tray_clone = tray.clone();
     let cmd_sender_clone = cmd_sender.clone();
+    let settings_window_clone = settings_window.clone();
+    let notif_manager_clone = notif_manager.clone();
     let event_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -82,6 +90,17 @@ async fn main() -> Result<()> {
                         ui::tray::TrayMessage::ManualSaveRequested => {
                             info!("Manual save requested by user");
                             let _ = cmd_sender_clone.send(monitor::MonitorCommand::TriggerManualSave).await;
+                        }
+                        ui::tray::TrayMessage::OpenSettings => {
+                            info!("Opening settings window");
+                            let settings_clone = settings_window_clone.clone();
+                            // Run settings window in a separate thread
+                            std::thread::spawn(move || {
+                                settings_clone.show();
+                                if let Err(e) = settings_clone.run() {
+                                    error!("Failed to run settings window: {}", e);
+                                }
+                            });
                         }
                         _ => {
                             // Other messages are handled by the tray itself

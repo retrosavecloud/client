@@ -1,5 +1,6 @@
 use sysinfo::{System, ProcessesToUpdate};
 use tracing::debug;
+use std::process::Command;
 
 #[derive(Debug, Clone)]
 pub enum EmulatorProcess {
@@ -72,6 +73,48 @@ pub fn get_pcsx2_save_directory() -> Option<String> {
                 return Some(old_save_path);
             }
         }
+    }
+    
+    None
+}
+
+/// Try to get the current game name from PCSX2
+pub fn get_pcsx2_game_name(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        // Try to get window title using xdotool
+        let output = Command::new("xdotool")
+            .args(&["search", "--pid", &pid.to_string(), "getwindowname"])
+            .output()
+            .ok()?;
+        
+        if output.status.success() {
+            let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            
+            // PCSX2 window title format is usually: "Game Title | PCSX2"
+            // or "PCSX2 - Game Title [Status]"
+            if title.contains(" | PCSX2") {
+                let parts: Vec<&str> = title.split(" | PCSX2").collect();
+                if !parts.is_empty() {
+                    return Some(parts[0].to_string());
+                }
+            } else if title.starts_with("PCSX2") && title.contains(" - ") {
+                let parts: Vec<&str> = title.split(" - ").collect();
+                if parts.len() > 1 {
+                    // Remove any [Status] tags
+                    let game = parts[1].split('[').next().unwrap_or(parts[1]).trim();
+                    if !game.is_empty() && game != "No Game Running" {
+                        return Some(game.to_string());
+                    }
+                }
+            }
+        }
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        // Windows implementation would use Win32 API
+        // For now, return None
     }
     
     None
