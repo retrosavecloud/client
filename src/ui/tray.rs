@@ -57,38 +57,9 @@ impl SystemTray {
                     return;
                 }
                 
-                match Self::create_tray_icon(sender_clone) {
-                    Ok(tray_icon) => {
-                        info!("Tray icon created successfully on Linux");
-                        
-                        // Handle control messages in GTK idle callback
-                        let tray_icon = Arc::new(Mutex::new(Some(tray_icon)));
-                        let tray_icon_clone = tray_icon.clone();
-                        
-                        glib::idle_add_local(move || {
-                            if let Ok(msg) = control_receiver.try_recv() {
-                                match msg {
-                                    TrayControl::UpdateStatus(status) => {
-                                        info!("Updating tray status: {}", status);
-                                        // TODO: Update tooltip or menu item
-                                    }
-                                    TrayControl::ShowNotification(title, message) => {
-                                        Self::show_notification_internal(&title, &message);
-                                    }
-                                    TrayControl::Exit => {
-                                        if let Ok(mut tray_guard) = tray_icon_clone.lock() {
-                                            *tray_guard = None; // Drop the tray icon
-                                        }
-                                        gtk::main_quit();
-                                        return glib::ControlFlow::Break;
-                                    }
-                                }
-                            }
-                            glib::ControlFlow::Continue
-                        });
-                        
-                        // Run GTK main loop - this keeps the tray icon alive
-                        gtk::main();
+                match Self::create_tray_icon_linux(sender_clone, control_receiver) {
+                    Ok(_) => {
+                        info!("GTK main loop ended");
                     }
                     Err(e) => {
                         error!("Failed to create tray icon: {}", e);
@@ -135,6 +106,134 @@ impl SystemTray {
         };
         
         Ok((tray, receiver))
+    }
+    
+    #[cfg(target_os = "linux")]
+    fn create_tray_icon_linux(
+        event_sender: mpsc::Sender<TrayMessage>,
+        mut control_receiver: mpsc::Receiver<TrayControl>,
+    ) -> Result<()> {
+        info!("Creating tray icon and menu for Linux");
+        
+        // Create menu
+        let menu = Menu::new();
+        
+        // Status item (disabled, just for display)
+        let status_item = MenuItem::new("Status: Monitoring", true, None);
+        menu.append(&status_item)?;
+        
+        // Separator
+        menu.append(&PredefinedMenuItem::separator())?;
+        
+        // Save Now item
+        let save_now_item = MenuItem::new("Save Now", true, None);
+        menu.append(&save_now_item)?;
+        
+        // Separator
+        menu.append(&PredefinedMenuItem::separator())?;
+        
+        // Settings item
+        let settings_item = MenuItem::new("Settings", true, None);
+        menu.append(&settings_item)?;
+        
+        // About item
+        let about_item = MenuItem::new("About", true, None);
+        menu.append(&about_item)?;
+        
+        // Separator
+        menu.append(&PredefinedMenuItem::separator())?;
+        
+        // Exit item
+        let exit_item = MenuItem::new("Exit", true, None);
+        menu.append(&exit_item)?;
+        
+        // Store menu item IDs for the event handler
+        let exit_id = exit_item.id().clone();
+        let save_now_id = save_now_item.id().clone();
+        let settings_id = settings_item.id().clone();
+        let about_id = about_item.id().clone();
+        
+        // Load or create icon
+        let icon = Self::load_icon()?;
+        
+        // Create tray icon
+        let tray_icon = TrayIconBuilder::new()
+            .with_menu(Box::new(menu))
+            .with_tooltip("Retrosave - Monitoring")
+            .with_icon(icon)
+            .build()?;
+        
+        info!("Tray icon created successfully on Linux");
+        
+        // Keep tray icon alive
+        let tray_icon = Arc::new(Mutex::new(Some(tray_icon)));
+        let tray_icon_clone = tray_icon.clone();
+        
+        // Handle all events in GTK idle callback
+        glib::idle_add_local(move || {
+            // Check for control messages
+            if let Ok(msg) = control_receiver.try_recv() {
+                match msg {
+                    TrayControl::UpdateStatus(status) => {
+                        info!("Updating tray status: {}", status);
+                        // TODO: Update tooltip or menu item
+                    }
+                    TrayControl::ShowNotification(title, message) => {
+                        Self::show_notification_internal(&title, &message);
+                    }
+                    TrayControl::Exit => {
+                        if let Ok(mut tray_guard) = tray_icon_clone.lock() {
+                            *tray_guard = None; // Drop the tray icon
+                        }
+                        gtk::main_quit();
+                        return glib::ControlFlow::Break;
+                    }
+                }
+            }
+            
+            // Check for menu events
+            if let Ok(event) = MenuEvent::receiver().try_recv() {
+                info!("Menu event received: {:?}", event.id);
+                if event.id == exit_id {
+                    info!("Exit requested from tray menu");
+                    gtk::main_quit();
+                    std::process::exit(0);
+                } else if event.id == save_now_id {
+                    info!("Manual save requested from tray menu");
+                    let _ = event_sender.try_send(TrayMessage::ManualSaveRequested);
+                } else if event.id == settings_id {
+                    info!("Settings clicked");
+                    let _ = event_sender.try_send(TrayMessage::OpenSettings);
+                } else if event.id == about_id {
+                    info!("About clicked");
+                    // TODO: Show about dialog
+                }
+            }
+            
+            // Check for tray icon events (like clicks)
+            if let Ok(event) = TrayIconEvent::receiver().try_recv() {
+                info!("Tray event received: {:?}", event);
+                match event {
+                    TrayIconEvent::Click { .. } => {
+                        info!("Tray icon clicked");
+                    }
+                    TrayIconEvent::DoubleClick { .. } => {
+                        info!("Tray icon double-clicked");
+                        // TODO: Show main window when implemented
+                    }
+                    _ => {
+                        info!("Other tray event: {:?}", event);
+                    }
+                }
+            }
+            
+            glib::ControlFlow::Continue
+        });
+        
+        // Run GTK main loop - this blocks until quit
+        gtk::main();
+        
+        Ok(())
     }
     
     fn create_tray_icon(event_sender: mpsc::Sender<TrayMessage>) -> Result<TrayIcon> {
@@ -188,7 +287,7 @@ impl SystemTray {
             .with_icon(icon)
             .build()?;
         
-        // Handle menu events in a separate thread
+        // Handle menu events in a separate thread (non-Linux platforms)
         std::thread::spawn(move || {
             info!("Menu event handler thread started");
             let menu_channel = MenuEvent::receiver();

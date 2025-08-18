@@ -34,7 +34,7 @@ async fn main() -> Result<()> {
     info!("System tray initialized");
 
     // Create settings window (but don't show it yet)
-    let settings_window = Arc::new(SettingsWindow::new());
+    let settings_window = Arc::new(SettingsWindow::new()?);
 
     // Create notification manager
     let notif_manager = Arc::new(NotificationManager::new());
@@ -92,11 +92,10 @@ async fn main() -> Result<()> {
                         ui::tray::TrayMessage::OpenSettings => {
                             info!("Opening settings window");
                             let settings_clone = settings_window_clone.clone();
-                            // Run settings window in a separate thread
-                            std::thread::spawn(move || {
-                                settings_clone.show();
-                                if let Err(e) = settings_clone.run() {
-                                    error!("Failed to run settings window: {}", e);
+                            // Show the settings window
+                            tokio::spawn(async move {
+                                if let Err(e) = settings_clone.show().await {
+                                    error!("Failed to show settings window: {}", e);
                                 }
                             });
                         }

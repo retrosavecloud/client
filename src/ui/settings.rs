@@ -1,7 +1,8 @@
 use anyhow::Result;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, info};
+use tracing::{debug, info, error};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -28,72 +29,222 @@ impl Default for Settings {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum SettingsCommand {
+    Show,
+    Hide,
+}
+
 pub struct SettingsWindow {
+    command_sender: mpsc::Sender<SettingsCommand>,
     settings: Arc<Mutex<Settings>>,
-    visible: Arc<Mutex<bool>>,
 }
 
 impl SettingsWindow {
-    pub fn new() -> Self {
-        Self {
-            settings: Arc::new(Mutex::new(Settings::default())),
-            visible: Arc::new(Mutex::new(false)),
-        }
-    }
-
-    pub fn show(&self) {
-        *self.visible.lock().unwrap() = true;
-        info!("Settings window opened");
-    }
-
-    pub fn hide(&self) {
-        *self.visible.lock().unwrap() = false;
-        info!("Settings window closed");
-    }
-
-    pub fn is_visible(&self) -> bool {
-        *self.visible.lock().unwrap()
-    }
-
-    pub fn run(&self) -> Result<()> {
-        let settings = self.settings.clone();
-        let visible = self.visible.clone();
+    pub fn new() -> Result<Self> {
+        let (tx, rx) = mpsc::channel::<SettingsCommand>(10);
+        let settings = Arc::new(Mutex::new(Settings::default()));
+        let settings_clone = settings.clone();
         
-        let native_options = eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default()
+        // Start the settings window in a dedicated thread
+        std::thread::spawn(move || {
+            if let Err(e) = Self::run_window(settings_clone, rx) {
+                error!("Settings window thread error: {}", e);
+            }
+        });
+        
+        Ok(Self {
+            command_sender: tx,
+            settings,
+        })
+    }
+    
+    fn run_window(
+        settings: Arc<Mutex<Settings>>,
+        mut command_receiver: mpsc::Receiver<SettingsCommand>,
+    ) -> Result<()> {
+        // Wait for the first Show command before creating the window
+        let runtime = tokio::runtime::Runtime::new()?;
+        
+        runtime.block_on(async move {
+            // Wait for first show command
+            info!("Settings window thread waiting for first show command");
+            loop {
+                if let Some(cmd) = command_receiver.recv().await {
+                    match cmd {
+                        SettingsCommand::Show => {
+                            info!("First show command received, creating settings window");
+                            break;
+                        }
+                        SettingsCommand::Hide => {
+                            // Ignore hide commands before window exists
+                            continue;
+                        }
+                    }
+                } else {
+                    // Channel closed, exit
+                    return Ok(());
+                }
+            }
+            
+            // Now create the channel for the window
+            let (tx, rx) = std::sync::mpsc::channel::<SettingsCommand>();
+            
+            // Forward remaining commands to the window
+            let tx_clone = tx.clone();
+            tokio::spawn(async move {
+                while let Some(cmd) = command_receiver.recv().await {
+                    if tx_clone.send(cmd).is_err() {
+                        break;
+                    }
+                }
+            });
+            
+            // Load window icon
+            let mut viewport = egui::ViewportBuilder::default()
                 .with_inner_size([500.0, 400.0])
-                .with_resizable(false),
-            ..Default::default()
-        };
+                .with_resizable(false)
+                .with_visible(true); // Show immediately since we got a Show command
+                
+            if let Some(icon) = Self::load_window_icon() {
+                viewport = viewport.with_icon(std::sync::Arc::new(icon));
+            }
+            
+            // Configure native options with Linux-specific settings
+            let native_options = eframe::NativeOptions {
+                viewport,
+                #[cfg(target_os = "linux")]
+                event_loop_builder: Some(Box::new(|builder| {
+                    use winit::platform::x11::EventLoopBuilderExtX11;
+                    builder.with_any_thread(true);
+                })),
+                ..Default::default()
+            };
 
-        eframe::run_native(
-            "Retrosave Settings",
-            native_options,
-            Box::new(move |_cc| {
-                Ok(Box::new(SettingsApp {
-                    settings: settings.clone(),
-                    visible: visible.clone(),
-                }))
-            }),
-        ).map_err(|e| anyhow::anyhow!("Failed to run settings window: {}", e))?;
+            // Run the event loop
+            eframe::run_native(
+                "Retrosave Settings",
+                native_options,
+                Box::new(move |_cc| {
+                    Ok(Box::new(SettingsApp {
+                        settings: settings.clone(),
+                        command_receiver: rx,
+                        visible: true, // Start visible since we're responding to Show
+                        first_show: false, // Already showing
+                    }))
+                }),
+            ).map_err(|e| anyhow::anyhow!("Failed to run settings window: {}", e))?;
 
+            Ok(())
+        })
+    }
+    
+    pub async fn show(&self) -> Result<()> {
+        info!("Showing settings window");
+        self.command_sender.send(SettingsCommand::Show).await
+            .map_err(|_| anyhow::anyhow!("Failed to send show command"))?;
         Ok(())
+    }
+    
+    pub async fn hide(&self) -> Result<()> {
+        info!("Hiding settings window");
+        self.command_sender.send(SettingsCommand::Hide).await
+            .map_err(|_| anyhow::anyhow!("Failed to send hide command"))?;
+        Ok(())
+    }
+    
+    pub fn get_settings(&self) -> Settings {
+        self.settings.lock().unwrap().clone()
+    }
+    
+    fn load_window_icon() -> Option<egui::IconData> {
+        // Try to load icon from various possible paths
+        let icon_paths = [
+            "/home/eralp/Projects/retrosave/client/assets/icon-256.png",
+            "/home/eralp/Projects/retrosave/client/assets/icon-128.png",
+            "/home/eralp/Projects/retrosave/client/assets/icon-64.png",
+            "client/assets/icon-256.png",
+            "client/assets/icon-128.png",
+            "client/assets/icon-64.png",
+            "assets/icon-256.png",
+            "assets/icon-128.png",
+            "assets/icon-64.png",
+        ];
+        
+        for path in &icon_paths {
+            if let Ok(image_data) = std::fs::read(path) {
+                if let Ok(image) = image::load_from_memory(&image_data) {
+                    let rgba = image.to_rgba8();
+                    let (width, height) = rgba.dimensions();
+                    return Some(egui::IconData {
+                        rgba: rgba.into_raw(),
+                        width,
+                        height,
+                    });
+                }
+            }
+        }
+        
+        // If no icon file found, create a simple colored icon as fallback
+        info!("Using fallback icon for settings window");
+        let size = 64;
+        let mut rgba = Vec::with_capacity((size * size * 4) as usize);
+        for _ in 0..size*size {
+            rgba.push(34);   // R - dark green
+            rgba.push(139);  // G
+            rgba.push(34);   // B
+            rgba.push(255);  // A - fully opaque
+        }
+        
+        Some(egui::IconData {
+            rgba,
+            width: size,
+            height: size,
+        })
     }
 }
 
 struct SettingsApp {
     settings: Arc<Mutex<Settings>>,
-    visible: Arc<Mutex<bool>>,
+    command_receiver: std::sync::mpsc::Receiver<SettingsCommand>,
+    visible: bool,
+    first_show: bool,
 }
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check if window should be visible
-        if !*self.visible.lock().unwrap() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        // Check for commands
+        if let Ok(cmd) = self.command_receiver.try_recv() {
+            match cmd {
+                SettingsCommand::Show => {
+                    info!("Settings window received show command");
+                    self.visible = true;
+                    if self.first_show {
+                        // On first show, make window visible
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        self.first_show = false;
+                    } else {
+                        // On subsequent shows, just unhide and focus
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                }
+                SettingsCommand::Hide => {
+                    info!("Settings window received hide command");
+                    self.visible = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                }
+            }
+        }
+        
+        // Request repaint to keep checking for commands
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        
+        // Only show UI if visible
+        if !self.visible {
             return;
         }
-
+        
         egui::CentralPanel::default().show(ctx, |ui| {
             let mut settings = self.settings.lock().unwrap();
             
@@ -139,12 +290,14 @@ impl eframe::App for SettingsApp {
                 if ui.button("Save").clicked() {
                     info!("Settings saved");
                     // TODO: Actually save settings to database
-                    *self.visible.lock().unwrap() = false;
+                    self.visible = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 }
                 
                 if ui.button("Cancel").clicked() {
                     debug!("Settings cancelled");
-                    *self.visible.lock().unwrap() = false;
+                    self.visible = false;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 }
                 
                 if ui.button("Apply").clicked() {
@@ -153,5 +306,13 @@ impl eframe::App for SettingsApp {
                 }
             });
         });
+        
+        // Handle window close button
+        if ctx.input(|i| i.viewport().close_requested()) {
+            self.visible = false;
+            // Don't actually close, just hide
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
     }
 }
