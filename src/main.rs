@@ -56,7 +56,7 @@ async fn main() -> Result<()> {
     let tray_clone = tray.clone();
     let cmd_sender_clone = cmd_sender.clone();
     let settings_window_clone = settings_window.clone();
-    let notif_manager_clone = notif_manager.clone();
+    let _notif_manager_clone = notif_manager.clone();
     let event_handle = tokio::spawn(async move {
         loop {
             tokio::select! {

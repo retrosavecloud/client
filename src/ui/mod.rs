@@ -3,5 +3,5 @@ pub mod settings;
 pub mod notifications;
 
 pub use tray::SystemTray;
-pub use settings::{Settings, SettingsWindow};
+pub use settings::SettingsWindow;
 pub use notifications::NotificationManager;

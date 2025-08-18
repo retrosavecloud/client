@@ -60,22 +60,22 @@ impl SettingsWindow {
         let visible = self.visible.clone();
         
         let native_options = eframe::NativeOptions {
-            initial_window_size: Some(egui::Vec2::new(500.0, 400.0)),
-            resizable: false,
-            always_on_top: false,
+            viewport: egui::ViewportBuilder::default()
+                .with_inner_size([500.0, 400.0])
+                .with_resizable(false),
             ..Default::default()
         };
 
         eframe::run_native(
             "Retrosave Settings",
             native_options,
-            Box::new(move |cc| {
+            Box::new(move |_cc| {
                 Ok(Box::new(SettingsApp {
                     settings: settings.clone(),
                     visible: visible.clone(),
                 }))
             }),
-        )?;
+        ).map_err(|e| anyhow::anyhow!("Failed to run settings window: {}", e))?;
 
         Ok(())
     }
@@ -87,7 +87,7 @@ struct SettingsApp {
 }
 
 impl eframe::App for SettingsApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Check if window should be visible
         if !*self.visible.lock().unwrap() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
