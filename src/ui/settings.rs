@@ -42,17 +42,24 @@ pub enum SettingsCommand {
 pub struct SettingsWindow {
     command_sender: mpsc::Sender<SettingsCommand>,
     settings: Arc<Mutex<Settings>>,
+    save_callback: Arc<Mutex<Option<Box<dyn Fn(Settings) + Send + Sync>>>>,
 }
 
 impl SettingsWindow {
     pub fn new() -> Result<Self> {
+        Self::new_with_settings(Settings::default())
+    }
+    
+    pub fn new_with_settings(initial_settings: Settings) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<SettingsCommand>(10);
-        let settings = Arc::new(Mutex::new(Settings::default()));
+        let settings = Arc::new(Mutex::new(initial_settings));
         let settings_clone = settings.clone();
+        let save_callback = Arc::new(Mutex::new(None));
+        let save_callback_clone = save_callback.clone();
         
         // Start the settings window in a dedicated thread
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_window(settings_clone, rx) {
+            if let Err(e) = Self::run_window(settings_clone, rx, save_callback_clone) {
                 error!("Settings window thread error: {}", e);
             }
         });
@@ -60,12 +67,18 @@ impl SettingsWindow {
         Ok(Self {
             command_sender: tx,
             settings,
+            save_callback,
         })
+    }
+    
+    pub fn set_save_callback(&self, callback: Box<dyn Fn(Settings) + Send + Sync>) {
+        *self.save_callback.lock().unwrap() = Some(callback);
     }
     
     fn run_window(
         settings: Arc<Mutex<Settings>>,
         command_receiver: mpsc::Receiver<SettingsCommand>,
+        save_callback: Arc<Mutex<Option<Box<dyn Fn(Settings) + Send + Sync>>>>,
     ) -> Result<()> {
         // Wait for the first Show command before creating the window
         let runtime = tokio::runtime::Runtime::new()?;
@@ -136,6 +149,7 @@ impl SettingsWindow {
                         command_receiver: rx,
                         visible: true, // Start visible since we're responding to Show
                         first_show: false, // Already showing
+                        save_callback: save_callback.clone(),
                     }))
                 }),
             ).map_err(|e| anyhow::anyhow!("Failed to run settings window: {}", e))?;
@@ -214,6 +228,7 @@ struct SettingsApp {
     command_receiver: std::sync::mpsc::Receiver<SettingsCommand>,
     visible: bool,
     first_show: bool,
+    save_callback: Arc<Mutex<Option<Box<dyn Fn(Settings) + Send + Sync>>>>,
 }
 
 impl eframe::App for SettingsApp {
@@ -325,7 +340,13 @@ impl eframe::App for SettingsApp {
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
                     info!("Settings saved");
-                    // TODO: Actually save settings to database
+                    // Call the save callback if it exists
+                    if let Ok(callback_guard) = self.save_callback.lock() {
+                        if let Some(ref callback) = *callback_guard {
+                            let settings = self.settings.lock().unwrap().clone();
+                            callback(settings);
+                        }
+                    }
                     self.visible = false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 }

@@ -90,12 +90,26 @@ pub fn get_pcsx2_game_name(pid: u32) -> Option<String> {
         
         if output.status.success() {
             let title = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            debug!("PCSX2 window title: {}", title);
             
-            // PCSX2 window title format is usually: "Game Title | PCSX2"
-            // or "PCSX2 - Game Title [Status]"
+            // PCSX2 window title formats:
+            // 1. "Game Title | PCSX2"
+            // 2. "PCSX2 - Game Title [Status]"
+            // 3. "Game Title - PCSX2 1.7.x"
+            // 4. Just "PCSX2" when no game is running
+            
+            if title == "PCSX2" || title.is_empty() {
+                return None;
+            }
+            
             if title.contains(" | PCSX2") {
                 let parts: Vec<&str> = title.split(" | PCSX2").collect();
-                if !parts.is_empty() {
+                if !parts.is_empty() && !parts[0].is_empty() {
+                    return Some(parts[0].to_string());
+                }
+            } else if title.contains(" - PCSX2") {
+                let parts: Vec<&str> = title.split(" - PCSX2").collect();
+                if !parts.is_empty() && !parts[0].is_empty() {
                     return Some(parts[0].to_string());
                 }
             } else if title.starts_with("PCSX2") && title.contains(" - ") {
