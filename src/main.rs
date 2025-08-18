@@ -6,8 +6,11 @@ use tokio::sync::mpsc;
 mod monitor;
 mod emulators;
 mod ui;
+mod storage;
 
 use ui::{SystemTray, tray::TrayMessage};
+use storage::Database;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -18,6 +21,14 @@ async fn main() -> Result<()> {
 
     info!("Starting Retrosave...");
 
+    // Initialize database
+    let db = Arc::new(Database::new(None).await?);
+    info!("Database initialized");
+    
+    // Get database stats
+    let (games, saves) = db.get_stats().await?;
+    info!("Database stats: {} games, {} saves", games, saves);
+
     // Initialize system tray
     let (tray, mut tray_receiver) = SystemTray::new()?;
     tray.init()?;
@@ -26,9 +37,10 @@ async fn main() -> Result<()> {
     // Create channel for monitor to tray communication
     let (monitor_sender, mut monitor_receiver) = mpsc::channel::<monitor::MonitorEvent>(100);
 
-    // Start process monitoring with sender
+    // Start process monitoring with database
+    let db_clone = db.clone();
     let monitor_handle = tokio::spawn(async move {
-        if let Err(e) = monitor::start_monitoring_with_sender(monitor_sender).await {
+        if let Err(e) = monitor::start_monitoring_with_db(monitor_sender, db_clone).await {
             error!("Monitor error: {}", e);
         }
     });
@@ -54,6 +66,10 @@ async fn main() -> Result<()> {
                         monitor::MonitorEvent::GameDetected(name) => {
                             tray_clone.update_status(&format!("Playing: {}", name));
                             let _ = tray_clone.send_message(TrayMessage::GameDetected(name)).await;
+                        }
+                        monitor::MonitorEvent::SaveDetected(game, path) => {
+                            tray_clone.show_notification("Save Detected", &format!("{} saved", game));
+                            let _ = tray_clone.send_message(TrayMessage::SaveDetected(format!("{}: {}", game, path))).await;
                         }
                     }
                 }
