@@ -44,6 +44,40 @@ impl SaveWatcher {
         Ok((watcher, receiver))
     }
     
+    pub async fn check_for_changes(&self) -> Result<usize> {
+        let mut changes_detected = 0;
+        let mut hashes = self.file_hashes.lock().await;
+        
+        // Check all tracked files for changes
+        for (path, old_hash) in hashes.clone().iter() {
+            if path.exists() {
+                match hash_file(path) {
+                    Ok(new_hash) => {
+                        if &new_hash != old_hash {
+                            info!("File changed: {:?}", path);
+                            hashes.insert(path.clone(), new_hash.clone());
+                            changes_detected += 1;
+                            
+                            // Send save event
+                            let _ = self.sender.send(SaveEvent {
+                                file_path: path.clone(),
+                                file_hash: new_hash,
+                                file_size: std::fs::metadata(path)?.len(),
+                                game_name: "Unknown Game".to_string(),
+                                emulator: "PCSX2".to_string(),
+                            }).await;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to hash file {:?}: {}", path, e);
+                    }
+                }
+            }
+        }
+        
+        Ok(changes_detected)
+    }
+    
     pub async fn start(&mut self) -> Result<()> {
         info!("Starting save watcher for: {:?}", self.save_dir);
         

@@ -9,7 +9,7 @@ mod ui;
 mod storage;
 mod hotkey;
 
-use ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager};
+use ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager, AudioFeedback};
 use storage::Database;
 use hotkey::{HotkeyManager, HotkeyEvent};
 use std::sync::Arc;
@@ -38,8 +38,11 @@ async fn main() -> Result<()> {
     // Create settings window (but don't show it yet)
     let settings_window = Arc::new(SettingsWindow::new()?);
 
-    // Create notification manager
+    // Create notification manager for desktop notifications
     let notif_manager = Arc::new(NotificationManager::new());
+    
+    // Create audio feedback for save events
+    let audio_feedback = Arc::new(AudioFeedback::default());
 
     // Create channels for monitor communication
     let (monitor_sender, mut monitor_receiver) = mpsc::channel::<monitor::MonitorEvent>(100);
@@ -69,7 +72,8 @@ async fn main() -> Result<()> {
     // Handle monitor events and update tray
     let cmd_sender_clone = cmd_sender.clone();
     let settings_window_clone = settings_window.clone();
-    let _notif_manager_clone = notif_manager.clone();
+    let notif_manager_clone = notif_manager.clone();
+    let audio_feedback_clone = audio_feedback.clone();
     let cmd_sender_hotkey = cmd_sender.clone();
     let hotkey_manager_clone = hotkey_manager.clone();
     let event_handle = tokio::spawn(async move {
@@ -79,7 +83,7 @@ async fn main() -> Result<()> {
                     match hotkey_event {
                         HotkeyEvent::SaveNow => {
                             info!("Hotkey triggered: Save Now");
-                            tray.show_notification("Manual Save", "Save triggered by hotkey");
+                            // Don't show notification here, wait for the result
                             let _ = cmd_sender_hotkey.send(monitor::MonitorCommand::TriggerManualSave).await;
                         }
                     }
@@ -104,6 +108,44 @@ async fn main() -> Result<()> {
                         monitor::MonitorEvent::SaveDetected(game, path) => {
                             tray.show_notification("Save Detected", &format!("{} saved", game));
                             let _ = tray.send_message(TrayMessage::SaveDetected(format!("{}: {}", game, path))).await;
+                        }
+                        monitor::MonitorEvent::ManualSaveResult(result) => {
+                            // Play audio feedback
+                            audio_feedback_clone.play_save_result(&result);
+                            
+                            // Show colored terminal output
+                            match &result {
+                                monitor::SaveResult::Success { game_name, file_count } => {
+                                    // Green success message
+                                    println!("\n\x1b[32m✓ Save Successful!\x1b[0m");
+                                    println!("  Game: {}", game_name);
+                                    println!("  Files saved: {}", file_count);
+                                    
+                                    notif_manager_clone.show_success(
+                                        "Save Successful", 
+                                        &format!("{} - {} file(s) saved", game_name, file_count)
+                                    );
+                                }
+                                monitor::SaveResult::NoChanges => {
+                                    // Yellow info message
+                                    println!("\n\x1b[33mℹ No changes to save\x1b[0m");
+                                    
+                                    notif_manager_clone.show_info(
+                                        "No Changes", 
+                                        "No save file changes detected"
+                                    );
+                                }
+                                monitor::SaveResult::Failed(error) => {
+                                    // Red error message
+                                    println!("\n\x1b[31m✗ Save Failed!\x1b[0m");
+                                    println!("  Error: {}", error);
+                                    
+                                    notif_manager_clone.show_error(
+                                        "Save Failed", 
+                                        error
+                                    );
+                                }
+                            }
                         }
                     }
                 }

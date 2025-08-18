@@ -17,11 +17,19 @@ pub enum MonitorEvent {
     EmulatorStopped(String),
     GameDetected(String),
     SaveDetected(String, String), // game_name, file_path
+    ManualSaveResult(SaveResult),
 }
 
 #[derive(Debug, Clone)]
 pub enum MonitorCommand {
     TriggerManualSave,
+}
+
+#[derive(Debug, Clone)]
+pub enum SaveResult {
+    Success { game_name: String, file_count: usize },
+    NoChanges,
+    Failed(String),
 }
 
 pub async fn start_monitoring() -> Result<()> {
@@ -55,6 +63,7 @@ pub async fn start_monitoring_with_commands(
     let mut save_watcher: Option<SaveWatcher> = None;
     let mut save_receiver: Option<mpsc::Receiver<SaveEvent>> = None;
     let backup_manager = SaveBackupManager::new(None)?;
+    let mut current_game_name: Option<String> = None;
     
     loop {
         tokio::select! {
@@ -67,12 +76,29 @@ pub async fn start_monitoring_with_commands(
                     MonitorCommand::TriggerManualSave => {
                         info!("Manual save triggered");
                         // Force save detection for all tracked saves
-                        if let Some(_watcher) = &save_watcher {
-                            // TODO: Implement force save in watcher
-                            info!("Checking all save files for changes...");
+                        let result = if let Some(ref watcher) = save_watcher {
+                            // Check for actual file changes
+                            match watcher.check_for_changes().await {
+                                Ok(changes) => {
+                                    if changes > 0 {
+                                        let game_name = current_game_name.clone()
+                                            .unwrap_or_else(|| "Unknown Game".to_string());
+                                        SaveResult::Success { 
+                                            game_name,
+                                            file_count: changes 
+                                        }
+                                    } else {
+                                        SaveResult::NoChanges
+                                    }
+                                }
+                                Err(e) => SaveResult::Failed(e.to_string())
+                            }
                         } else {
-                            warn!("No active save watcher - no emulator running");
-                        }
+                            SaveResult::Failed("No emulator running".to_string())
+                        };
+                        
+                        // Send result back through event system
+                        let _ = sender.send(MonitorEvent::ManualSaveResult(result)).await;
                     }
                 }
                 continue;
@@ -174,8 +200,10 @@ pub async fn start_monitoring_with_commands(
                     
                     // Try to get the actual game name
                     if let Some(game_name) = process::get_pcsx2_game_name(*pid) {
+                        current_game_name = Some(game_name.clone());
                         let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
                     } else {
+                        current_game_name = Some("Unknown Game".to_string());
                         let _ = sender.send(MonitorEvent::GameDetected("Unknown Game".to_string())).await;
                     }
                 }
@@ -193,6 +221,7 @@ pub async fn start_monitoring_with_commands(
                 for emulator in tracked_emulators.drain() {
                     info!("{} stopped", emulator);
                     let _ = sender.send(MonitorEvent::EmulatorStopped(emulator)).await;
+                    current_game_name = None;
                 }
             }
         }
