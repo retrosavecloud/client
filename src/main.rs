@@ -31,7 +31,6 @@ async fn main() -> Result<()> {
 
     // Initialize system tray
     let (tray, mut tray_receiver) = SystemTray::new()?;
-    tray.init()?;
     info!("System tray initialized");
 
     // Create settings window (but don't show it yet)
@@ -53,7 +52,6 @@ async fn main() -> Result<()> {
     });
 
     // Handle monitor events and update tray
-    let tray_clone = tray.clone();
     let cmd_sender_clone = cmd_sender.clone();
     let settings_window_clone = settings_window.clone();
     let _notif_manager_clone = notif_manager.clone();
@@ -64,22 +62,22 @@ async fn main() -> Result<()> {
                     match event {
                         monitor::MonitorEvent::EmulatorStarted(name) => {
                             let msg = format!("{} detected", name);
-                            tray_clone.update_status(&msg);
-                            tray_clone.show_notification("Emulator Detected", &msg);
-                            let _ = tray_clone.send_message(TrayMessage::EmulatorDetected(name)).await;
+                            tray.update_status(&msg);
+                            tray.show_notification("Emulator Detected", &msg);
+                            let _ = tray.send_message(TrayMessage::EmulatorDetected(name)).await;
                         }
                         monitor::MonitorEvent::EmulatorStopped(name) => {
-                            tray_clone.update_status("Monitoring");
-                            tray_clone.show_notification("Emulator Stopped", &format!("{} has stopped", name));
-                            let _ = tray_clone.send_message(TrayMessage::EmulatorStopped).await;
+                            tray.update_status("Monitoring");
+                            tray.show_notification("Emulator Stopped", &format!("{} has stopped", name));
+                            let _ = tray.send_message(TrayMessage::EmulatorStopped).await;
                         }
                         monitor::MonitorEvent::GameDetected(name) => {
-                            tray_clone.update_status(&format!("Playing: {}", name));
-                            let _ = tray_clone.send_message(TrayMessage::GameDetected(name)).await;
+                            tray.update_status(&format!("Playing: {}", name));
+                            let _ = tray.send_message(TrayMessage::GameDetected(name)).await;
                         }
                         monitor::MonitorEvent::SaveDetected(game, path) => {
-                            tray_clone.show_notification("Save Detected", &format!("{} saved", game));
-                            let _ = tray_clone.send_message(TrayMessage::SaveDetected(format!("{}: {}", game, path))).await;
+                            tray.show_notification("Save Detected", &format!("{} saved", game));
+                            let _ = tray.send_message(TrayMessage::SaveDetected(format!("{}: {}", game, path))).await;
                         }
                     }
                 }
