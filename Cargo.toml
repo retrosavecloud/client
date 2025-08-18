@@ -7,6 +7,7 @@ license = "MIT"
 repository = "https://github.com/retrosave/retrosave-client"
 homepage = "https://retrosave.cloud"
 description = "Automatic save management for retro game emulators"
+build = "build.rs"
 
 [dependencies]
 # Core dependencies
@@ -70,7 +71,7 @@ tokio-test = "0.4"
 winapi = { version = "0.3", features = ["winuser", "processthreadsapi", "handleapi"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-x11 = "2.21"
+x11 = { version = "2.21", features = ["xlib"] }
 gtk = "0.18"
 glib = "0.18"
 

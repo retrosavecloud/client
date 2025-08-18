@@ -10,7 +10,7 @@ mod storage;
 mod hotkey;
 
 use ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager, AudioFeedback};
-use storage::Database;
+use storage::{Database, SettingsManager};
 use hotkey::{HotkeyManager, HotkeyEvent};
 use std::sync::Arc;
 
@@ -30,13 +30,21 @@ async fn main() -> Result<()> {
     // Get database stats
     let (games, saves) = db.get_stats().await?;
     info!("Database stats: {} games, {} saves", games, saves);
+    
+    // Initialize settings manager and load settings
+    let settings_manager = Arc::new(SettingsManager::new(db.clone()));
+    let saved_settings = settings_manager.load_settings().await?;
+    info!("Settings loaded from database");
 
     // Initialize system tray
     let (tray, mut tray_receiver) = SystemTray::new()?;
     info!("System tray initialized");
 
-    // Create settings window (but don't show it yet)
-    let settings_window = Arc::new(SettingsWindow::new()?);
+    // Create settings window with settings manager for direct database access
+    let settings_window = Arc::new(SettingsWindow::with_settings_manager(
+        saved_settings,
+        settings_manager.clone()
+    )?);
 
     // Create notification manager for desktop notifications
     let notif_manager = Arc::new(NotificationManager::new());

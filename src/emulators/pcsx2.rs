@@ -46,9 +46,12 @@ impl Emulator for PCSX2 {
     }
     
     fn get_current_game(&self) -> Option<String> {
-        // TODO: Parse PCSX2 window title or logs to get game name
-        // For now, return a placeholder
-        if self.is_running() {
+        if let Some(pid) = self.pid {
+            // Try to get the actual game name from window title
+            if let Some(game_name) = crate::monitor::process::get_pcsx2_game_name(pid) {
+                return Some(game_name);
+            }
+            // Fallback to generic name if we can't get the actual title
             Some("Unknown PS2 Game".to_string())
         } else {
             None
