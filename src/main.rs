@@ -40,19 +40,11 @@ async fn main() -> Result<()> {
     let (tray, mut tray_receiver) = SystemTray::new()?;
     info!("System tray initialized");
 
-    // Create settings window with loaded settings
-    let settings_window = Arc::new(SettingsWindow::new_with_settings(saved_settings)?);
-    
-    // Set up callback to save settings when changed
-    let settings_manager_clone = settings_manager.clone();
-    settings_window.set_save_callback(Box::new(move |settings| {
-        let manager = settings_manager_clone.clone();
-        tokio::spawn(async move {
-            if let Err(e) = manager.save_settings(&settings).await {
-                error!("Failed to save settings: {}", e);
-            }
-        });
-    }));
+    // Create settings window with settings manager for direct database access
+    let settings_window = Arc::new(SettingsWindow::with_settings_manager(
+        saved_settings,
+        settings_manager.clone()
+    )?);
 
     // Create notification manager for desktop notifications
     let notif_manager = Arc::new(NotificationManager::new());

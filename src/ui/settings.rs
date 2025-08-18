@@ -3,6 +3,7 @@ use eframe::egui;
 use std::sync::{Arc, Mutex};
 use tracing::{debug, info, error};
 use tokio::sync::mpsc;
+use crate::storage::SettingsManager;
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -42,7 +43,7 @@ pub enum SettingsCommand {
 pub struct SettingsWindow {
     command_sender: mpsc::Sender<SettingsCommand>,
     settings: Arc<Mutex<Settings>>,
-    save_callback: Arc<Mutex<Option<Box<dyn Fn(Settings) + Send + Sync>>>>,
+    settings_manager: Option<Arc<SettingsManager>>,
 }
 
 impl SettingsWindow {
@@ -54,12 +55,10 @@ impl SettingsWindow {
         let (tx, rx) = mpsc::channel::<SettingsCommand>(10);
         let settings = Arc::new(Mutex::new(initial_settings));
         let settings_clone = settings.clone();
-        let save_callback = Arc::new(Mutex::new(None));
-        let save_callback_clone = save_callback.clone();
         
         // Start the settings window in a dedicated thread
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_window(settings_clone, rx, save_callback_clone) {
+            if let Err(e) = Self::run_window(settings_clone, rx, None) {
                 error!("Settings window thread error: {}", e);
             }
         });
@@ -67,18 +66,34 @@ impl SettingsWindow {
         Ok(Self {
             command_sender: tx,
             settings,
-            save_callback,
+            settings_manager: None,
         })
     }
     
-    pub fn set_save_callback(&self, callback: Box<dyn Fn(Settings) + Send + Sync>) {
-        *self.save_callback.lock().unwrap() = Some(callback);
+    pub fn with_settings_manager(initial_settings: Settings, settings_manager: Arc<SettingsManager>) -> Result<Self> {
+        let (tx, rx) = mpsc::channel::<SettingsCommand>(10);
+        let settings = Arc::new(Mutex::new(initial_settings));
+        let settings_clone = settings.clone();
+        let settings_manager_clone = Some(settings_manager.clone());
+        
+        // Start the settings window in a dedicated thread
+        std::thread::spawn(move || {
+            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone) {
+                error!("Settings window thread error: {}", e);
+            }
+        });
+        
+        Ok(Self {
+            command_sender: tx,
+            settings,
+            settings_manager: Some(settings_manager),
+        })
     }
     
     fn run_window(
         settings: Arc<Mutex<Settings>>,
         command_receiver: mpsc::Receiver<SettingsCommand>,
-        save_callback: Arc<Mutex<Option<Box<dyn Fn(Settings) + Send + Sync>>>>,
+        settings_manager: Option<Arc<SettingsManager>>,
     ) -> Result<()> {
         // Wait for the first Show command before creating the window
         let runtime = tokio::runtime::Runtime::new()?;
@@ -149,7 +164,7 @@ impl SettingsWindow {
                         command_receiver: rx,
                         visible: true, // Start visible since we're responding to Show
                         first_show: false, // Already showing
-                        save_callback: save_callback.clone(),
+                        settings_manager: settings_manager.clone(),
                     }))
                 }),
             ).map_err(|e| anyhow::anyhow!("Failed to run settings window: {}", e))?;
@@ -228,7 +243,7 @@ struct SettingsApp {
     command_receiver: std::sync::mpsc::Receiver<SettingsCommand>,
     visible: bool,
     first_show: bool,
-    save_callback: Arc<Mutex<Option<Box<dyn Fn(Settings) + Send + Sync>>>>,
+    settings_manager: Option<Arc<SettingsManager>>,
 }
 
 impl eframe::App for SettingsApp {
@@ -336,17 +351,33 @@ impl eframe::App for SettingsApp {
             
             ui.separator();
             
-            // Buttons
+            // Buttons (Only Save and Cancel - no confusing Apply button)
             ui.horizontal(|ui| {
                 if ui.button("Save").clicked() {
-                    info!("Settings saved");
-                    // Call the save callback if it exists
-                    if let Ok(callback_guard) = self.save_callback.lock() {
-                        if let Some(ref callback) = *callback_guard {
-                            let settings = self.settings.lock().unwrap().clone();
-                            callback(settings);
-                        }
+                    info!("Settings saved button clicked");
+                    // Clone settings while we have the lock, but drop it before spawning thread
+                    let settings_to_save = settings.clone();
+                    drop(settings); // Explicitly drop the mutex guard
+                    
+                    // Save directly using settings manager if available
+                    if let Some(ref manager) = self.settings_manager {
+                        let manager_clone = manager.clone();
+                        
+                        // Spawn a thread to do the async save without blocking UI
+                        std::thread::spawn(move || {
+                            // Create a small runtime just for this save operation
+                            let rt = tokio::runtime::Runtime::new().unwrap();
+                            rt.block_on(async {
+                                info!("Saving settings to database...");
+                                if let Err(e) = manager_clone.save_settings(&settings_to_save).await {
+                                    error!("Failed to save settings: {}", e);
+                                } else {
+                                    info!("Settings successfully saved to database");
+                                }
+                            });
+                        });
                     }
+                    
                     self.visible = false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                 }
@@ -355,11 +386,6 @@ impl eframe::App for SettingsApp {
                     debug!("Settings cancelled");
                     self.visible = false;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                }
-                
-                if ui.button("Apply").clicked() {
-                    info!("Settings applied");
-                    // TODO: Apply settings without closing
                 }
             });
         });
