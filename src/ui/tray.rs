@@ -6,6 +6,7 @@ use tray_icon::{
 use tracing::{debug, error, info};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
+use notify_rust::{Notification, Timeout};
 
 // GTK initialization on Linux
 #[cfg(target_os = "linux")]
@@ -19,6 +20,7 @@ pub enum TrayMessage {
     SaveDetected(String),
     UpdateStatus(String),
     ManualSaveRequested,
+    OpenSettings,
 }
 
 #[derive(Clone)]
@@ -112,7 +114,8 @@ impl SystemTray {
                         info!("Manual save requested from tray menu");
                         let _ = menu_sender.blocking_send(TrayMessage::ManualSaveRequested);
                     } else if event.id == settings_id {
-                        info!("Settings clicked - not implemented yet");
+                        info!("Settings clicked");
+                        let _ = menu_sender.blocking_send(TrayMessage::OpenSettings);
                     } else if event.id == about_id {
                         info!("About clicked");
                         // TODO: Show about dialog
@@ -187,15 +190,16 @@ impl SystemTray {
         // For now, just log
         info!("Notification: {} - {}", title, message);
         
-        // TODO: Implement actual notifications
-        #[cfg(target_os = "linux")]
+        // Show actual desktop notification
+        if let Err(e) = Notification::new()
+            .summary(title)
+            .body(message)
+            .appname("Retrosave")
+            .icon("dialog-information")
+            .timeout(Timeout::Milliseconds(5000))
+            .show()
         {
-            // Use notify-rust or similar
-        }
-        
-        #[cfg(target_os = "windows")]
-        {
-            // Use windows notifications
+            debug!("Failed to show desktop notification: {}", e);
         }
     }
 }

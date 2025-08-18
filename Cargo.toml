@@ -38,6 +38,7 @@ retrosave-shared = { path = "../shared" }
 egui = "0.29"
 eframe = { version = "0.29", features = ["persistence"] }
 tray-icon = "0.19"
+notify-rust = "4.11"
 
 # System monitoring
 sysinfo = "0.32"

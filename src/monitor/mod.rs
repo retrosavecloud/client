@@ -164,14 +164,20 @@ pub async fn start_monitoring_with_commands(
                     }
                 }
                 
-                // Try to detect the game
+                // Try to detect the game after a short delay
                 tokio::time::sleep(Duration::from_secs(2)).await;
-                let _ = sender.send(MonitorEvent::GameDetected("Unknown Game".to_string())).await;
             }
             
-            match emulator {
+            match &emulator {
                 process::EmulatorProcess::PCSX2 { pid, exe_path } => {
                     debug!("PCSX2 running - PID: {}, Path: {}", pid, exe_path);
+                    
+                    // Try to get the actual game name
+                    if let Some(game_name) = process::get_pcsx2_game_name(*pid) {
+                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
+                    } else {
+                        let _ = sender.send(MonitorEvent::GameDetected("Unknown Game".to_string())).await;
+                    }
                 }
             }
         } else {
