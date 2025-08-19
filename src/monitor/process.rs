@@ -128,10 +128,13 @@ fn get_game_from_window_title(_pid: u32) -> Option<String> {
 fn get_game_from_window_title_linux() -> Option<String> {
     use x11::xlib;
     
+    debug!("Starting X11 window title detection for PCSX2");
+    
     unsafe {
         // Open X11 display
         let display = xlib::XOpenDisplay(std::ptr::null());
         if display.is_null() {
+            debug!("Failed to open X11 display");
             return None;
         }
         
@@ -169,6 +172,8 @@ fn get_game_from_window_title_linux() -> Option<String> {
                 properties as *const xlib::Window,
                 num_items as usize
             );
+            
+            debug!("Found {} windows to check", num_items);
             
             let net_wm_name = xlib::XInternAtom(
                 display,
@@ -232,11 +237,32 @@ fn get_game_from_window_title_linux() -> Option<String> {
                                 .to_string();
                             xlib::XFree(title_prop as *mut _);
                             
-                            // Skip generic PCSX2 titles
-                            if !title.starts_with("PCSX2") && title != "pcsx2-qt" {
+                            debug!("Found PCSX2 window with title: {}", title);
+                            
+                            // Skip generic PCSX2 titles and empty titles
+                            if !title.is_empty() && !title.starts_with("PCSX2") && title != "pcsx2-qt" {
                                 xlib::XFree(properties as *mut _);
                                 xlib::XCloseDisplay(display);
+                                info!("Detected game from X11 window title: {}", title);
                                 return Some(title);
+                            }
+                        } else {
+                            // Try fallback to WM_NAME if _NET_WM_NAME doesn't work
+                            let mut title_prop: *mut i8 = std::ptr::null_mut();
+                            if xlib::XFetchName(display, window, &mut title_prop) != 0 && !title_prop.is_null() {
+                                let title = std::ffi::CStr::from_ptr(title_prop)
+                                    .to_string_lossy()
+                                    .to_string();
+                                xlib::XFree(title_prop as *mut _);
+                                
+                                debug!("Found PCSX2 window with WM_NAME: {}", title);
+                                
+                                if !title.is_empty() && !title.starts_with("PCSX2") && title != "pcsx2-qt" {
+                                    xlib::XFree(properties as *mut _);
+                                    xlib::XCloseDisplay(display);
+                                    info!("Detected game from X11 WM_NAME: {}", title);
+                                    return Some(title);
+                                }
                             }
                         }
                     }
