@@ -211,9 +211,21 @@ pub async fn start_monitoring_with_commands(
                     // Try to get the actual game name
                     if let Some(game_name) = process::get_pcsx2_game_name(*pid) {
                         current_game_name = Some(game_name.clone());
+                        
+                        // Update SaveWatcher with the current game name
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(Some(game_name.clone())).await;
+                        }
+                        
                         let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
                     } else {
                         current_game_name = Some("Unknown Game".to_string());
+                        
+                        // Clear game name in SaveWatcher
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(None).await;
+                        }
+                        
                         let _ = sender.send(MonitorEvent::GameDetected("Unknown Game".to_string())).await;
                     }
                 }
@@ -223,6 +235,8 @@ pub async fn start_monitoring_with_commands(
             if !tracked_emulators.is_empty() {
                 // Stop save watcher
                 if let Some(mut watcher) = save_watcher.take() {
+                    // Clear game name before stopping
+                    watcher.set_current_game(None).await;
                     watcher.stop();
                     info!("Stopped save watcher");
                 }

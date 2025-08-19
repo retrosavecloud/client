@@ -3,7 +3,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 use super::hasher::{hash_file, get_file_size};
@@ -25,6 +25,7 @@ pub struct SaveWatcher {
     database: Arc<Database>,
     file_hashes: Arc<Mutex<HashMap<PathBuf, String>>>,
     sender: mpsc::Sender<SaveEvent>,
+    current_game_name: Arc<RwLock<Option<String>>>,
 }
 
 impl SaveWatcher {
@@ -40,9 +41,20 @@ impl SaveWatcher {
             database,
             file_hashes: Arc::new(Mutex::new(HashMap::new())),
             sender,
+            current_game_name: Arc::new(RwLock::new(None)),
         };
         
         Ok((watcher, receiver))
+    }
+    
+    pub async fn set_current_game(&self, game_name: Option<String>) {
+        let mut current = self.current_game_name.write().await;
+        *current = game_name.clone();
+        if let Some(ref name) = game_name {
+            info!("SaveWatcher: Current game set to: {}", name);
+        } else {
+            info!("SaveWatcher: Current game cleared");
+        }
     }
     
     pub async fn check_for_changes(&self) -> Result<usize> {
@@ -59,12 +71,20 @@ impl SaveWatcher {
                             hashes.insert(path.clone(), new_hash.clone());
                             changes_detected += 1;
                             
+                            // Get current game name or fallback to extraction
+                            let game_name = {
+                                let current = self.current_game_name.read().await;
+                                current.clone().unwrap_or_else(|| {
+                                    Self::extract_game_name(path, &self.save_dir)
+                                })
+                            };
+                            
                             // Send save event
                             let _ = self.sender.send(SaveEvent {
                                 file_path: path.clone(),
                                 file_hash: new_hash,
                                 file_size: std::fs::metadata(path)?.len(),
-                                game_name: "Unknown Game".to_string(),
+                                game_name,
                                 emulator: "PCSX2".to_string(),
                             }).await;
                         }
@@ -93,6 +113,7 @@ impl SaveWatcher {
         let file_hashes = self.file_hashes.clone();
         let sender = self.sender.clone();
         let save_dir = self.save_dir.clone();
+        let current_game_name = self.current_game_name.clone();
         
         // Spawn handler for file events
         tokio::spawn(async move {
@@ -102,6 +123,7 @@ impl SaveWatcher {
                     &file_hashes,
                     &sender,
                     &save_dir,
+                    &current_game_name,
                 ).await {
                     error!("Error handling file event: {}", e);
                 }
@@ -143,6 +165,7 @@ impl SaveWatcher {
         file_hashes: &Arc<Mutex<HashMap<PathBuf, String>>>,
         sender: &mpsc::Sender<SaveEvent>,
         save_dir: &Path,
+        current_game_name: &Arc<RwLock<Option<String>>>,
     ) -> Result<()> {
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) => {
@@ -175,8 +198,13 @@ impl SaveWatcher {
                         // Get file size
                         let file_size = get_file_size(&path).unwrap_or(0);
                         
-                        // Determine game name from file path
-                        let game_name = Self::extract_game_name(&path, save_dir);
+                        // Get current game name or fallback to extraction
+                        let game_name = {
+                            let current = current_game_name.read().await;
+                            current.clone().unwrap_or_else(|| {
+                                Self::extract_game_name(&path, save_dir)
+                            })
+                        };
                         
                         // Send save event
                         let event = SaveEvent {
