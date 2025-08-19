@@ -16,7 +16,11 @@ pub enum MonitorEvent {
     EmulatorStarted(String),
     EmulatorStopped(String),
     GameDetected(String),
-    SaveDetected(String, String), // game_name, file_path
+    SaveDetected {
+        game_name: String,
+        emulator: String,
+        file_path: String,
+    },
     ManualSaveResult(SaveResult),
 }
 
@@ -154,10 +158,11 @@ pub async fn start_monitoring_with_commands(
                                 }
                                 
                                 // Send event
-                                let _ = sender.send(MonitorEvent::SaveDetected(
-                                    game.name,
-                                    save_event.file_path.to_string_lossy().to_string(),
-                                )).await;
+                                let _ = sender.send(MonitorEvent::SaveDetected {
+                                    game_name: game.name,
+                                    emulator: save_event.emulator,
+                                    file_path: save_event.file_path.to_string_lossy().to_string(),
+                                }).await;
                             }
                             Err(e) => error!("Failed to record save: {}", e),
                         }

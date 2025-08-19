@@ -24,6 +24,11 @@ pub enum TrayMessage {
     ManualSaveRequested,
     OpenSettings,
     HotkeyChanged(Option<String>),
+    // Cloud sync messages
+    SyncStarted,
+    SyncCompleted { uploaded: usize, downloaded: usize },
+    SyncFailed(String),
+    CloudAuthChanged { is_authenticated: bool, email: Option<String> },
 }
 
 // Control messages for the tray thread

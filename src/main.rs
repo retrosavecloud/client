@@ -8,10 +8,12 @@ mod emulators;
 mod ui;
 mod storage;
 mod hotkey;
+mod sync;
 
 use ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager, AudioFeedback};
 use storage::{Database, SettingsManager};
 use hotkey::{HotkeyManager, HotkeyEvent};
+use sync::{AuthManager, SyncService, SyncEvent};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -40,10 +42,26 @@ async fn main() -> Result<()> {
     let (tray, mut tray_receiver) = SystemTray::new()?;
     info!("System tray initialized");
 
-    // Create settings window with settings manager for direct database access
-    let settings_window = Arc::new(SettingsWindow::with_settings_manager(
+    // Initialize auth manager early so we can pass it to settings window
+    let auth_manager = Arc::new(AuthManager::new(saved_settings.cloud_api_url.clone()));
+    
+    // Initialize auth manager to load tokens from keyring
+    {
+        let auth_manager_clone = auth_manager.clone();
+        tokio::spawn(async move {
+            if let Err(e) = auth_manager_clone.init().await {
+                error!("Failed to initialize auth manager: {}", e);
+            } else {
+                info!("Auth manager initialized, checking stored tokens...");
+            }
+        });
+    }
+    
+    // Create settings window with settings manager and auth manager
+    let settings_window = Arc::new(SettingsWindow::with_auth_manager(
         saved_settings,
-        settings_manager.clone()
+        settings_manager.clone(),
+        auth_manager.clone()
     )?);
 
     // Create notification manager for desktop notifications
@@ -68,6 +86,24 @@ async fn main() -> Result<()> {
     
     // Start hotkey listener
     hotkey_manager.clone().start_listening();
+    
+    // Initialize cloud sync service
+    let (sync_event_sender, sync_event_receiver) = mpsc::unbounded_channel::<SyncEvent>();
+    let sync_service = Arc::new(SyncService::new(
+        auth_manager.clone(),
+        db.clone(),
+        settings.cloud_api_url.clone(),
+    ));
+    
+    // Start sync service if cloud sync is enabled
+    if settings.cloud_sync_enabled {
+        let sync_service_clone = sync_service.clone();
+        tokio::spawn(async move {
+            if let Err(e) = sync_service_clone.start(sync_event_receiver).await {
+                error!("Sync service error: {}", e);
+            }
+        });
+    }
 
     // Start process monitoring with database and command channel
     let db_clone = db.clone();
@@ -84,6 +120,7 @@ async fn main() -> Result<()> {
     let audio_feedback_clone = audio_feedback.clone();
     let cmd_sender_hotkey = cmd_sender.clone();
     let hotkey_manager_clone = hotkey_manager.clone();
+    let sync_event_sender_clone = sync_event_sender.clone();
     let event_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -113,9 +150,29 @@ async fn main() -> Result<()> {
                             tray.update_status(&format!("Playing: {}", name));
                             let _ = tray.send_message(TrayMessage::GameDetected(name)).await;
                         }
-                        monitor::MonitorEvent::SaveDetected(game, path) => {
-                            tray.show_notification("Save Detected", &format!("{} saved", game));
-                            let _ = tray.send_message(TrayMessage::SaveDetected(format!("{}: {}", game, path))).await;
+                        monitor::MonitorEvent::SaveDetected { game_name, emulator, file_path } => {
+                            tray.show_notification("Save Detected", &format!("{} saved", game_name));
+                            let _ = tray.send_message(TrayMessage::SaveDetected(format!("{}: {}", game_name, file_path))).await;
+                            
+                            // Send to sync service if cloud sync is enabled
+                            let settings = settings_window_clone.get_settings();
+                            if settings.cloud_sync_enabled {
+                                // Calculate file hash and size
+                                if let Ok(data) = tokio::fs::read(&file_path).await {
+                                    use sha2::{Sha256, Digest};
+                                    let mut hasher = Sha256::new();
+                                    hasher.update(&data);
+                                    let hash = format!("{:x}", hasher.finalize());
+                                    
+                                    let _ = sync_event_sender_clone.send(SyncEvent::SaveDetected {
+                                        game_name: game_name.clone(),
+                                        emulator,
+                                        file_path,
+                                        file_hash: hash,
+                                        file_size: data.len() as i64,
+                                    });
+                                }
+                            }
                         }
                         monitor::MonitorEvent::ManualSaveResult(result) => {
                             // Play audio feedback
@@ -180,6 +237,34 @@ async fn main() -> Result<()> {
                             // Update the hotkey manager
                             if let Err(e) = hotkey_manager_clone.set_save_hotkey(new_hotkey) {
                                 error!("Failed to update hotkey: {}", e);
+                            }
+                        }
+                        ui::tray::TrayMessage::SyncStarted => {
+                            info!("Cloud sync started");
+                            tray.update_status("Syncing...");
+                        }
+                        ui::tray::TrayMessage::SyncCompleted { uploaded, downloaded } => {
+                            info!("Cloud sync completed: {} uploaded, {} downloaded", uploaded, downloaded);
+                            tray.update_status("Monitoring (synced)");
+                            if uploaded > 0 || downloaded > 0 {
+                                tray.show_notification(
+                                    "Sync Complete", 
+                                    &format!("↑{} ↓{} saves synced", uploaded, downloaded)
+                                );
+                            }
+                        }
+                        ui::tray::TrayMessage::SyncFailed(error) => {
+                            error!("Cloud sync failed: {}", error);
+                            tray.show_notification("Sync Failed", &error);
+                        }
+                        ui::tray::TrayMessage::CloudAuthChanged { is_authenticated, email } => {
+                            if is_authenticated {
+                                let msg = format!("Logged in as {}", email.as_deref().unwrap_or("unknown"));
+                                info!("{}", msg);
+                                tray.show_notification("Cloud Connected", &msg);
+                            } else {
+                                info!("Logged out from cloud");
+                                tray.update_status("Monitoring (offline)");
                             }
                         }
                         _ => {
