@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{debug, error, info, warn};
 
 use super::hasher::{hash_file, get_file_size};
+use super::compression::{Compressor, CompressionStats};
 use super::Database;
 
 #[derive(Debug, Clone)]
@@ -250,6 +251,7 @@ impl SaveWatcher {
 pub struct SaveBackupManager {
     backup_dir: PathBuf,
     max_backups: usize,
+    compressor: Compressor,
 }
 
 impl SaveBackupManager {
@@ -268,23 +270,65 @@ impl SaveBackupManager {
         Ok(Self {
             backup_dir,
             max_backups: 5,
+            compressor: Compressor::default(),
         })
     }
     
-    pub fn backup_save(&self, source: &Path, game_name: &str, version: u32) -> Result<PathBuf> {
+    pub fn backup_save(&self, source: &Path, game_name: &str, version: u32) -> Result<(PathBuf, Option<CompressionStats>)> {
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-        let file_name = format!("{}_{}_v{}.bak", game_name, timestamp, version);
+        
+        // Use .zst extension if compression is enabled
+        let extension = if self.compressor.is_enabled() { "zst" } else { "bak" };
+        let file_name = format!("{}_{}_v{}.{}", game_name, timestamp, version, extension);
         
         let mut backup_path = self.backup_dir.clone();
         backup_path.push(game_name);
         std::fs::create_dir_all(&backup_path)?;
         backup_path.push(file_name);
         
-        std::fs::copy(source, &backup_path)
-            .context("Failed to backup save file")?;
+        // Compress and backup the save file
+        let stats = if self.compressor.is_enabled() {
+            let compression_stats = self.compressor.compress_file(source, &backup_path)
+                .context("Failed to compress and backup save file")?;
+            
+            info!(
+                "Backed up save to: {:?} (compressed {}% smaller)",
+                backup_path,
+                compression_stats.space_saved_percent() as u32
+            );
+            
+            Some(compression_stats)
+        } else {
+            std::fs::copy(source, &backup_path)
+                .context("Failed to backup save file")?;
+            info!("Backed up save to: {:?}", backup_path);
+            None
+        };
         
-        info!("Backed up save to: {:?}", backup_path);
-        Ok(backup_path)
+        Ok((backup_path, stats))
+    }
+    
+    pub fn restore_save(&self, backup_path: &Path, dest: &Path) -> Result<()> {
+        // Check if backup is compressed
+        if backup_path.extension().map_or(false, |ext| ext == "zst") {
+            self.compressor.decompress_file(backup_path, dest)
+                .context("Failed to decompress and restore save")?;
+            info!("Restored compressed save from {:?} to {:?}", backup_path, dest);
+        } else {
+            std::fs::copy(backup_path, dest)
+                .context("Failed to restore save file")?;
+            info!("Restored save from {:?} to {:?}", backup_path, dest);
+        }
+        
+        Ok(())
+    }
+    
+    pub fn set_compression_enabled(&mut self, enabled: bool) {
+        self.compressor.set_enabled(enabled);
+    }
+    
+    pub fn set_compression_level(&mut self, level: i32) {
+        self.compressor.set_level(level);
     }
     
     pub fn cleanup_old_backups(&self, game_name: &str) -> Result<()> {
@@ -295,12 +339,12 @@ impl SaveBackupManager {
             return Ok(());
         }
         
-        // Get all backup files
+        // Get all backup files (both .bak and .zst)
         let mut backups: Vec<_> = std::fs::read_dir(&game_backup_dir)?
             .filter_map(|entry| entry.ok())
             .filter(|entry| {
                 entry.path().extension()
-                    .map(|ext| ext == "bak")
+                    .map(|ext| ext == "bak" || ext == "zst")
                     .unwrap_or(false)
             })
             .collect();

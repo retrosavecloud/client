@@ -2,7 +2,7 @@ use anyhow::Result;
 use crate::ui::settings::Settings;
 use crate::storage::Database;
 use std::sync::Arc;
-use tracing::{info, debug, error};
+use tracing::{info, debug};
 
 /// Manager for persisting and loading application settings
 pub struct SettingsManager {
@@ -59,6 +59,16 @@ impl SettingsManager {
             settings.save_hotkey = Some(value);
         }
         
+        if let Some(value) = self.db.get_setting("compression_enabled").await? {
+            settings.compression_enabled = value == "true";
+        }
+        
+        if let Some(value) = self.db.get_setting("compression_level").await? {
+            if let Ok(level) = value.parse::<i32>() {
+                settings.compression_level = level.clamp(1, 22);
+            }
+        }
+        
         debug!("Loaded settings from database");
         Ok(settings)
     }
@@ -77,6 +87,9 @@ impl SettingsManager {
         if let Some(ref hotkey) = settings.save_hotkey {
             self.db.set_setting("save_hotkey", hotkey).await?;
         }
+        
+        self.db.set_setting("compression_enabled", &settings.compression_enabled.to_string()).await?;
+        self.db.set_setting("compression_level", &settings.compression_level.to_string()).await?;
         
         info!("Settings saved to database");
         Ok(())

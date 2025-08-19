@@ -125,12 +125,22 @@ pub async fn start_monitoring_with_commands(
                                 info!("Recorded save #{} for {}", save.version, game.name);
                                 
                                 // Backup the save
-                                if let Err(e) = backup_manager.backup_save(
+                                match backup_manager.backup_save(
                                     &save_event.file_path,
                                     &game.name,
                                     save.version as u32,
                                 ) {
-                                    warn!("Failed to backup save: {}", e);
+                                    Ok((_backup_path, stats)) => {
+                                        if let Some(compression_stats) = stats {
+                                            debug!(
+                                                "Compressed backup: {} -> {} ({}% saved)",
+                                                compression_stats.original_size,
+                                                compression_stats.compressed_size,
+                                                compression_stats.space_saved_percent() as u32
+                                            );
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to backup save: {}", e),
                                 }
                                 
                                 // Clean up old saves (keep last 5)
