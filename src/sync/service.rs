@@ -295,6 +295,21 @@ impl SyncService {
         Ok(())
     }
 
+    /// Get sync status
+    pub async fn get_status(&self) -> SyncStatus {
+        self.status.read().await.clone()
+    }
+    
+    /// Trigger manual sync
+    pub async fn trigger_sync(&self) -> Result<()> {
+        let auth_state = self.auth_manager.get_state().await;
+        if !auth_state.is_authenticated {
+            return Err(anyhow::anyhow!("Not authenticated"));
+        }
+        
+        self.perform_sync().await
+    }
+    
     /// Get or register a game
     async fn get_or_register_game(&self, name: &str, emulator: &str) -> Result<Uuid> {
         let cache_key = format!("{}:{}", name, emulator);
@@ -319,8 +334,4 @@ impl SyncService {
         Ok(game.id)
     }
 
-    /// Get current sync status
-    pub async fn get_status(&self) -> SyncStatus {
-        self.status.read().await.clone()
-    }
 }
