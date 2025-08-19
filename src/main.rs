@@ -8,6 +8,7 @@ mod emulators;
 mod ui;
 mod storage;
 mod hotkey;
+mod sync;
 
 use ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager, AudioFeedback};
 use storage::{Database, SettingsManager};

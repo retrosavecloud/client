@@ -14,6 +14,8 @@ pub struct Settings {
     pub minimize_to_tray: bool,
     pub show_notifications: bool,
     pub cloud_sync_enabled: bool,
+    pub cloud_api_url: String,
+    pub cloud_auto_sync: bool,
     pub hotkey_enabled: bool,
     pub save_hotkey: Option<String>,
     pub compression_enabled: bool,
@@ -30,6 +32,8 @@ impl Default for Settings {
             minimize_to_tray: true,
             show_notifications: true,
             cloud_sync_enabled: false,
+            cloud_api_url: "http://localhost:3000".to_string(),
+            cloud_auto_sync: true,
             hotkey_enabled: true,
             save_hotkey: Some("Ctrl+Shift+S".to_string()),
             compression_enabled: true,
@@ -346,11 +350,41 @@ impl eframe::App for SettingsApp {
             ui.separator();
             
             // Cloud Settings
-            ui.label("Cloud Settings");
-            ui.checkbox(&mut settings.cloud_sync_enabled, "Enable cloud sync (coming soon)");
+            ui.heading("Cloud Sync");
+            ui.checkbox(&mut settings.cloud_sync_enabled, "Enable cloud sync");
+            
             if settings.cloud_sync_enabled {
-                ui.label("Cloud sync will be available in v1.1");
-                settings.cloud_sync_enabled = false;
+                ui.indent("cloud_settings", |ui| {
+                    // API URL
+                    ui.horizontal(|ui| {
+                        ui.label("API URL:");
+                        ui.text_edit_singleline(&mut settings.cloud_api_url);
+                    });
+                    
+                    // Auto sync
+                    ui.checkbox(&mut settings.cloud_auto_sync, "Automatically sync saves");
+                    
+                    // Auth status (placeholder for now)
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label("Status:");
+                        ui.colored_label(egui::Color32::from_rgb(255, 100, 100), "Not logged in");
+                    });
+                    
+                    // Login/Register buttons
+                    ui.horizontal(|ui| {
+                        if ui.button("Login").clicked() {
+                            // TODO: Open login dialog
+                            info!("Login button clicked");
+                        }
+                        if ui.button("Register").clicked() {
+                            // TODO: Open register dialog
+                            info!("Register button clicked");
+                        }
+                    });
+                    
+                    ui.label("💡 Cloud sync keeps your saves synchronized across all devices");
+                });
             }
             
             ui.separator();

@@ -4,3 +4,4 @@ pub mod emulators;
 pub mod ui;
 pub mod storage;
 pub mod hotkey;
+pub mod sync;
