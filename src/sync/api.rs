@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
@@ -152,15 +153,27 @@ impl SyncApi {
 
     /// Upload save file data to presigned URL
     pub async fn upload_save_data(&self, upload_url: &str, data: Vec<u8>) -> Result<()> {
+        // Convert virtual-hosted style URL to path-style for MinIO compatibility
+        // Example: http://retrosave-saves.localhost:9000/... -> http://localhost:9000/retrosave-saves/...
+        let fixed_url = if upload_url.contains("retrosave-saves.localhost") {
+            upload_url.replace("http://retrosave-saves.localhost:9000/", "http://localhost:9000/retrosave-saves/")
+        } else {
+            upload_url.to_string()
+        };
+        
+        debug!("Uploading file to S3: {}", fixed_url);
+        
         let response = self.client
-            .put(upload_url)
+            .put(&fixed_url)
             .body(data)
             .send()
             .await
             .context("Failed to upload save data")?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to upload save data to S3"));
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(anyhow::anyhow!("Failed to upload save data to S3: {} - {}", status, text));
         }
 
         Ok(())

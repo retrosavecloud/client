@@ -3,6 +3,7 @@ use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watche
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -26,6 +27,7 @@ pub struct SaveWatcher {
     file_hashes: Arc<Mutex<HashMap<PathBuf, String>>>,
     sender: mpsc::Sender<SaveEvent>,
     current_game_name: Arc<RwLock<Option<String>>>,
+    last_event_times: Arc<Mutex<HashMap<PathBuf, Instant>>>,
 }
 
 impl SaveWatcher {
@@ -42,6 +44,7 @@ impl SaveWatcher {
             file_hashes: Arc::new(Mutex::new(HashMap::new())),
             sender,
             current_game_name: Arc::new(RwLock::new(None)),
+            last_event_times: Arc::new(Mutex::new(HashMap::new())),
         };
         
         Ok((watcher, receiver))
@@ -114,6 +117,7 @@ impl SaveWatcher {
         let sender = self.sender.clone();
         let save_dir = self.save_dir.clone();
         let current_game_name = self.current_game_name.clone();
+        let last_event_times = self.last_event_times.clone();
         
         // Spawn handler for file events
         tokio::spawn(async move {
@@ -124,6 +128,7 @@ impl SaveWatcher {
                     &sender,
                     &save_dir,
                     &current_game_name,
+                    &last_event_times,
                 ).await {
                     error!("Error handling file event: {}", e);
                 }
@@ -166,12 +171,26 @@ impl SaveWatcher {
         sender: &mpsc::Sender<SaveEvent>,
         save_dir: &Path,
         current_game_name: &Arc<RwLock<Option<String>>>,
+        last_event_times: &Arc<Mutex<HashMap<PathBuf, Instant>>>,
     ) -> Result<()> {
+        const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+        
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) => {
                 for path in event.paths {
                     // Check if it's a save file (memory card or save state)
                     if Self::is_save_file(&path) {
+                        // Check debounce - skip if event was too recent
+                        let now = Instant::now();
+                        let mut last_times = last_event_times.lock().await;
+                        
+                        if let Some(last_time) = last_times.get(&path) {
+                            if now.duration_since(*last_time) < DEBOUNCE_DURATION {
+                                debug!("Debouncing event for {:?}", path);
+                                continue;
+                            }
+                        }
+                        
                         debug!("Save file changed: {:?}", path);
                         
                         // Calculate file hash
@@ -188,12 +207,15 @@ impl SaveWatcher {
                         if let Some(old_hash) = hashes.get(&path) {
                             if old_hash == &hash {
                                 debug!("File unchanged (same hash): {:?}", path);
+                                // Update debounce time even for unchanged files
+                                last_times.insert(path.clone(), now);
                                 continue;
                             }
                         }
                         
-                        // Update hash
+                        // Update hash and debounce time
                         hashes.insert(path.clone(), hash.clone());
+                        last_times.insert(path.clone(), now);
                         
                         // Get file size
                         let file_size = get_file_size(&path).unwrap_or(0);

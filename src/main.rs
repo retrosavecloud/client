@@ -105,10 +105,20 @@ async fn main() -> Result<()> {
         });
     }
 
-    // Start process monitoring with database and command channel
+    // Start process monitoring with database, command channel, and sync integration
     let db_clone = db.clone();
+    let sync_sender_for_monitor = if settings.cloud_sync_enabled {
+        Some(sync_event_sender.clone())
+    } else {
+        None
+    };
     let monitor_handle = tokio::spawn(async move {
-        if let Err(e) = monitor::start_monitoring_with_commands(monitor_sender, db_clone, cmd_receiver).await {
+        if let Err(e) = monitor::start_monitoring_with_sync(
+            monitor_sender, 
+            db_clone, 
+            cmd_receiver,
+            sync_sender_for_monitor
+        ).await {
             error!("Monitor error: {}", e);
         }
     });

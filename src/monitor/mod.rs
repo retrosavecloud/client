@@ -10,6 +10,7 @@ use tokio::sync::mpsc;
 use tracing::{info, debug, warn, error};
 
 use crate::storage::{Database, SaveWatcher, SaveEvent, SaveBackupManager};
+use crate::sync::SyncEvent;
 
 #[derive(Debug, Clone)]
 pub enum MonitorEvent {
@@ -58,7 +59,16 @@ pub async fn start_monitoring_with_db(
 pub async fn start_monitoring_with_commands(
     sender: mpsc::Sender<MonitorEvent>,
     database: Arc<Database>,
+    cmd_receiver: mpsc::Receiver<MonitorCommand>,
+) -> Result<()> {
+    start_monitoring_with_sync(sender, database, cmd_receiver, None).await
+}
+
+pub async fn start_monitoring_with_sync(
+    sender: mpsc::Sender<MonitorEvent>,
+    database: Arc<Database>,
     mut cmd_receiver: mpsc::Receiver<MonitorCommand>,
+    sync_sender: Option<mpsc::UnboundedSender<SyncEvent>>,
 ) -> Result<()> {
     info!("Process monitoring started with save detection");
     
@@ -157,12 +167,23 @@ pub async fn start_monitoring_with_commands(
                                     warn!("Failed to cleanup old backups: {}", e);
                                 }
                                 
-                                // Send event
+                                // Send monitor event
                                 let _ = sender.send(MonitorEvent::SaveDetected {
-                                    game_name: game.name,
-                                    emulator: save_event.emulator,
+                                    game_name: game.name.clone(),
+                                    emulator: save_event.emulator.clone(),
                                     file_path: save_event.file_path.to_string_lossy().to_string(),
                                 }).await;
+                                
+                                // Send sync event if sync is enabled
+                                if let Some(ref sync_tx) = sync_sender {
+                                    let _ = sync_tx.send(SyncEvent::SaveDetected {
+                                        game_name: game.name,
+                                        emulator: save_event.emulator,
+                                        file_path: save_event.file_path.to_string_lossy().to_string(),
+                                        file_hash: save_event.file_hash,
+                                        file_size: save_event.file_size as i64,
+                                    });
+                                }
                             }
                             Err(e) => error!("Failed to record save: {}", e),
                         }
