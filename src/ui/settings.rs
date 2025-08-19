@@ -16,6 +16,8 @@ pub struct Settings {
     pub cloud_sync_enabled: bool,
     pub hotkey_enabled: bool,
     pub save_hotkey: Option<String>,
+    pub compression_enabled: bool,
+    pub compression_level: i32,
 }
 
 impl Default for Settings {
@@ -30,6 +32,8 @@ impl Default for Settings {
             cloud_sync_enabled: false,
             hotkey_enabled: true,
             save_hotkey: Some("Ctrl+Shift+S".to_string()),
+            compression_enabled: true,
+            compression_level: 3,
         }
     }
 }
@@ -347,6 +351,29 @@ impl eframe::App for SettingsApp {
             if settings.cloud_sync_enabled {
                 ui.label("Cloud sync will be available in v1.1");
                 settings.cloud_sync_enabled = false;
+            }
+            
+            ui.separator();
+            
+            ui.heading("Compression");
+            ui.checkbox(&mut settings.compression_enabled, "Enable save compression");
+            if settings.compression_enabled {
+                ui.horizontal(|ui| {
+                    ui.label("Compression level:");
+                    ui.add(egui::Slider::new(&mut settings.compression_level, 1..=22)
+                        .text("Level"));
+                });
+                ui.label(format!("Level {}: {}", 
+                    settings.compression_level,
+                    match settings.compression_level {
+                        1..=3 => "Fast (less compression)",
+                        4..=9 => "Balanced",
+                        10..=15 => "Good compression",
+                        16..=22 => "Best compression (slower)",
+                        _ => "Unknown"
+                    }
+                ));
+                ui.label("💡 Level 3 recommended for best speed/size balance");
             }
             
             ui.separator();
