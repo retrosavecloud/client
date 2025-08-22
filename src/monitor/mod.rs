@@ -277,3 +277,78 @@ pub async fn start_monitoring_with_sync(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn test_monitor_event_creation() {
+        let event = MonitorEvent::EmulatorStarted("PCSX2".to_string());
+        match event {
+            MonitorEvent::EmulatorStarted(name) => assert_eq!(name, "PCSX2"),
+            _ => panic!("Wrong event type"),
+        }
+
+        let event = MonitorEvent::SaveDetected {
+            game_name: "Final Fantasy X".to_string(),
+            emulator: "PCSX2".to_string(),
+            file_path: "/path/to/save".to_string(),
+        };
+        match event {
+            MonitorEvent::SaveDetected { game_name, emulator, file_path } => {
+                assert_eq!(game_name, "Final Fantasy X");
+                assert_eq!(emulator, "PCSX2");
+                assert_eq!(file_path, "/path/to/save");
+            }
+            _ => panic!("Wrong event type"),
+        }
+    }
+
+    #[test]
+    fn test_save_result() {
+        let result = SaveResult::Success {
+            game_name: "Test Game".to_string(),
+            file_count: 3,
+        };
+        match result {
+            SaveResult::Success { game_name, file_count } => {
+                assert_eq!(game_name, "Test Game");
+                assert_eq!(file_count, 3);
+            }
+            _ => panic!("Wrong result type"),
+        }
+
+        let result = SaveResult::NoChanges;
+        matches!(result, SaveResult::NoChanges);
+
+        let result = SaveResult::Failed("Error message".to_string());
+        match result {
+            SaveResult::Failed(msg) => assert_eq!(msg, "Error message"),
+            _ => panic!("Wrong result type"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_monitor_command() {
+        let cmd = MonitorCommand::TriggerManualSave;
+        matches!(cmd, MonitorCommand::TriggerManualSave);
+    }
+
+    #[tokio::test]
+    async fn test_event_channel() {
+        let (sender, mut receiver) = mpsc::channel::<MonitorEvent>(10);
+        
+        // Send events
+        sender.send(MonitorEvent::EmulatorStarted("Test".to_string())).await.unwrap();
+        sender.send(MonitorEvent::EmulatorStopped("Test".to_string())).await.unwrap();
+        
+        // Receive events
+        let event1 = receiver.recv().await.unwrap();
+        matches!(event1, MonitorEvent::EmulatorStarted(_));
+        
+        let event2 = receiver.recv().await.unwrap();
+        matches!(event2, MonitorEvent::EmulatorStopped(_));
+    }
+}

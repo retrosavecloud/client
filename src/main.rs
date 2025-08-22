@@ -148,19 +148,42 @@ async fn main() -> Result<()> {
                         monitor::MonitorEvent::EmulatorStarted(name) => {
                             let msg = format!("{} detected", name);
                             tray.update_status(&msg);
+                            
+                            // Show desktop notification if enabled
+                            if settings_window_clone.get_settings().show_notifications {
+                                notif_manager_clone.notify_emulator_detected(&name);
+                            }
+                            
                             tray.show_notification("Emulator Detected", &msg);
                             let _ = tray.send_message(TrayMessage::EmulatorDetected(name)).await;
                         }
                         monitor::MonitorEvent::EmulatorStopped(name) => {
                             tray.update_status("Monitoring");
+                            
+                            // Show desktop notification if enabled
+                            if settings_window_clone.get_settings().show_notifications {
+                                notif_manager_clone.notify_emulator_stopped(&name);
+                            }
+                            
                             tray.show_notification("Emulator Stopped", &format!("{} has stopped", name));
                             let _ = tray.send_message(TrayMessage::EmulatorStopped).await;
                         }
                         monitor::MonitorEvent::GameDetected(name) => {
                             tray.update_status(&format!("Playing: {}", name));
+                            
+                            // Show desktop notification if enabled
+                            if settings_window_clone.get_settings().show_notifications {
+                                notif_manager_clone.notify_game_detected(&name);
+                            }
+                            
                             let _ = tray.send_message(TrayMessage::GameDetected(name)).await;
                         }
                         monitor::MonitorEvent::SaveDetected { game_name, emulator, file_path } => {
+                            // Show desktop notification if enabled
+                            if settings_window_clone.get_settings().show_notifications {
+                                notif_manager_clone.notify_save_detected(&game_name);
+                            }
+                            
                             tray.show_notification("Save Detected", &format!("{} saved", game_name));
                             let _ = tray.send_message(TrayMessage::SaveDetected(format!("{}: {}", game_name, file_path))).await;
                             
@@ -230,6 +253,12 @@ async fn main() -> Result<()> {
                     match tray_msg {
                         ui::tray::TrayMessage::ManualSaveRequested => {
                             info!("Manual save requested by user");
+                            
+                            // Show desktop notification if enabled
+                            if settings_window_clone.get_settings().show_notifications {
+                                notif_manager_clone.notify_manual_save();
+                            }
+                            
                             let _ = cmd_sender_clone.send(monitor::MonitorCommand::TriggerManualSave).await;
                         }
                         ui::tray::TrayMessage::OpenSettings => {

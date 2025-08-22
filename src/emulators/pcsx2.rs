@@ -86,3 +86,53 @@ impl Emulator for PCSX2 {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pcsx2_new() {
+        let pcsx2 = PCSX2::new();
+        assert_eq!(pcsx2.name(), "PCSX2");
+        assert!(!pcsx2.is_running());
+        assert_eq!(pcsx2.get_current_game(), None);
+    }
+
+    #[test]
+    fn test_pcsx2_with_pid() {
+        let pcsx2 = PCSX2::with_pid(1234);
+        assert_eq!(pcsx2.name(), "PCSX2");
+        assert!(pcsx2.is_running());
+        assert_eq!(pcsx2.pid, Some(1234));
+    }
+
+    #[test]
+    fn test_pcsx2_save_directory() {
+        let mut pcsx2 = PCSX2::new();
+        
+        // Test with no save directory
+        pcsx2.save_directory = None;
+        assert_eq!(pcsx2.get_save_directory(), None);
+        
+        // Test with save directory
+        pcsx2.save_directory = Some("/home/user/.config/PCSX2/memcards".to_string());
+        assert_eq!(pcsx2.get_save_directory(), Some("/home/user/.config/PCSX2/memcards".to_string()));
+    }
+
+    #[test]
+    fn test_is_running() {
+        let mut pcsx2 = PCSX2::new();
+        
+        // Not running by default
+        assert!(!pcsx2.is_running());
+        
+        // Running when PID is set
+        pcsx2.pid = Some(5678);
+        assert!(pcsx2.is_running());
+        
+        // Not running when PID is cleared
+        pcsx2.pid = None;
+        assert!(!pcsx2.is_running());
+    }
+}

@@ -383,3 +383,155 @@ impl Database {
         Ok((total_games, total_saves))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn create_test_db() -> (Database, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = Database::new(Some(db_path)).await.unwrap();
+        (db, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_database_creation() {
+        let (db, _temp_dir) = create_test_db().await;
+        
+        // Check that we can get stats from a fresh database
+        let (games, saves) = db.get_stats().await.unwrap();
+        assert_eq!(games, 0);
+        assert_eq!(saves, 0);
+    }
+
+    #[tokio::test]
+    async fn test_game_crud() {
+        let (db, _temp_dir) = create_test_db().await;
+        
+        // Create a game
+        let game = db.get_or_create_game("Final Fantasy X", "PCSX2").await.unwrap();
+        assert_eq!(game.name, "Final Fantasy X");
+        assert_eq!(game.emulator, "PCSX2");
+        assert!(game.id > 0);
+        
+        // Get or create the same game (should return existing)
+        let retrieved = db.get_or_create_game("Final Fantasy X", "PCSX2").await.unwrap();
+        assert_eq!(retrieved.id, game.id);
+        assert_eq!(retrieved.name, game.name);
+        assert_eq!(retrieved.emulator, game.emulator);
+        
+        // List games
+        let games = db.get_all_games().await.unwrap();
+        assert_eq!(games.len(), 1);
+        assert_eq!(games[0].name, "Final Fantasy X");
+    }
+
+    #[tokio::test]
+    async fn test_save_crud() {
+        let (db, _temp_dir) = create_test_db().await;
+        
+        // Create a game first
+        let game = db.get_or_create_game("Test Game", "PCSX2").await.unwrap();
+        
+        // Create a save
+        let data = vec![1, 2, 3, 4, 5];
+        let hash = "test_hash";
+        let save = db.record_save(
+            game.id,
+            "/path/to/save.ps2",
+            hash,
+            data.len() as i64,
+            None
+        ).await.unwrap();
+        assert_eq!(save.game_id, game.id);
+        assert_eq!(save.file_path, "/path/to/save.ps2");
+        assert_eq!(save.file_size, 5);
+        
+        // List saves for game
+        let saves = db.get_saves_for_game(game.id, None).await.unwrap();
+        assert_eq!(saves.len(), 1);
+        assert_eq!(saves[0].file_path, "/path/to/save.ps2");
+    }
+
+    #[tokio::test]
+    async fn test_save_versioning() {
+        let (db, _temp_dir) = create_test_db().await;
+        
+        // Create a game
+        let game = db.get_or_create_game("Test Game", "PCSX2").await.unwrap();
+        
+        // Create multiple saves for the same file
+        for i in 1..=7 {
+            let data = vec![i; i as usize];
+            let hash = format!("hash_{}", i);
+            db.record_save(
+                game.id,
+                "/path/to/save.ps2",
+                &hash,
+                data.len() as i64,
+                None
+            ).await.unwrap();
+        }
+        
+        // Manually cleanup old saves (in production this would be done periodically)
+        db.cleanup_old_saves(game.id, 5).await.unwrap();
+        
+        // Should only keep the 5 most recent saves
+        let saves = db.get_saves_for_game(game.id, None).await.unwrap();
+        assert!(saves.len() <= 5, "Should keep at most 5 saves, got {}", saves.len());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_old_saves() {
+        let (db, _temp_dir) = create_test_db().await;
+        
+        // Create a game
+        let game = db.get_or_create_game("Test Game", "PCSX2").await.unwrap();
+        
+        // Create multiple saves
+        for i in 1..=10 {
+            let data = vec![i; i as usize];
+            let hash = format!("hash_{}", i);
+            db.record_save(
+                game.id,
+                &format!("/path/to/save{}.ps2", i),
+                &hash,
+                data.len() as i64,
+                None
+            ).await.unwrap();
+        }
+        
+        // Cleanup old saves, keeping only 3
+        let deleted = db.cleanup_old_saves(game.id, 3).await.unwrap();
+        assert!(deleted.len() > 0);
+        
+        // Check remaining saves
+        let remaining = db.get_saves_for_game(game.id, None).await.unwrap();
+        assert!(remaining.len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn test_database_stats() {
+        let (db, _temp_dir) = create_test_db().await;
+        
+        // Initial stats
+        let (games, saves) = db.get_stats().await.unwrap();
+        assert_eq!(games, 0);
+        assert_eq!(saves, 0);
+        
+        // Add some data
+        let game1 = db.get_or_create_game("Game 1", "PCSX2").await.unwrap();
+        let game2 = db.get_or_create_game("Game 2", "Dolphin").await.unwrap();
+        
+        db.record_save(game1.id, "/save1.ps2", "hash1", 1, None).await.unwrap();
+        db.record_save(game1.id, "/save2.ps2", "hash2", 1, None).await.unwrap();
+        db.record_save(game2.id, "/save3.gci", "hash3", 1, None).await.unwrap();
+        
+        // Check updated stats
+        let (games, saves) = db.get_stats().await.unwrap();
+        assert_eq!(games, 2);
+        assert_eq!(saves, 3);
+    }
+}
