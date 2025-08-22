@@ -25,8 +25,17 @@ async fn main() -> Result<()> {
 
     info!("Starting Retrosave...");
 
+    // Get data directory
+    let data_dir = dirs::data_dir()
+        .map(|d| d.join("retrosave"))
+        .unwrap_or_else(|| std::path::PathBuf::from(".retrosave"));
+    
+    // Create data directory if it doesn't exist
+    tokio::fs::create_dir_all(&data_dir).await?;
+
     // Initialize database
-    let db = Arc::new(Database::new(None).await?);
+    let db_path = data_dir.join("retrosave.db");
+    let db = Arc::new(Database::new(Some(db_path)).await?);
     info!("Database initialized");
     
     // Get database stats
@@ -93,6 +102,7 @@ async fn main() -> Result<()> {
         auth_manager.clone(),
         db.clone(),
         settings.cloud_api_url.clone(),
+        Some(data_dir.clone()),
     ));
     
     // Start sync service if cloud sync is enabled

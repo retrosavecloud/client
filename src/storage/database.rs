@@ -369,6 +369,21 @@ impl Database {
 
         Ok(())
     }
+    
+    /// Save a setting value (alias for set_setting)
+    pub async fn save_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.set_setting(key, value).await
+    }
+    
+    /// Delete a setting value
+    pub async fn delete_setting(&self, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        
+        Ok(())
+    }
 
     /// Get database statistics
     pub async fn get_stats(&self) -> Result<(i32, i32)> {

@@ -25,6 +25,7 @@ pub struct SaveMetadata {
     pub client_timestamp: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
     pub download_url: Option<String>,
+    pub metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,7 +60,7 @@ pub struct ListSavesResponse {
 
 pub struct SyncApi {
     client: Client,
-    base_url: String,
+    pub base_url: String,
     auth_manager: Arc<super::AuthManager>,
 }
 
@@ -125,6 +126,18 @@ impl SyncApi {
         file_size: i64,
         timestamp: DateTime<Utc>,
     ) -> Result<UploadUrlResponse> {
+        self.request_upload_url_with_metadata(game_id, file_hash, file_size, timestamp, None).await
+    }
+    
+    /// Request upload URL for a save file with metadata
+    pub async fn request_upload_url_with_metadata(
+        &self,
+        game_id: Uuid,
+        file_hash: &str,
+        file_size: i64,
+        timestamp: DateTime<Utc>,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<UploadUrlResponse> {
         let token = self.auth_manager.get_access_token().await
             .context("Not authenticated")?;
 
@@ -136,7 +149,7 @@ impl SyncApi {
                 file_hash: file_hash.to_string(),
                 file_size,
                 client_timestamp: timestamp,
-                metadata: None,
+                metadata,
             })
             .send()
             .await

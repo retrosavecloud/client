@@ -29,6 +29,8 @@ zstd = "0.13"
 # Cryptography
 sha2 = "0.10"
 uuid = { version = "1.11", features = ["v4", "serde"] }
+aes-gcm = "0.10"
+argon2 = "0.5"
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -58,6 +60,7 @@ rodio = "0.19"
 # Networking
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
 
 # Configuration
 toml = "0.8"
@@ -67,8 +70,6 @@ dirs = "5.0"
 # Security
 # keyring removed - using file-based storage
 base64 = "0.22"
-aes-gcm = "0.10"
-argon2 = "0.5"
 rand = "0.8"
 gethostname = "0.5"
 
