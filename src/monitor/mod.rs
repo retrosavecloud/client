@@ -199,6 +199,7 @@ pub async fn start_monitoring_with_sync(
             let emulator_name = match &emulator {
                 process::EmulatorProcess::PCSX2 { .. } => "PCSX2",
                 process::EmulatorProcess::Dolphin { .. } => "Dolphin",
+                process::EmulatorProcess::RPCS3 { .. } => "RPCS3",
             };
             
             // Check if this is a newly detected emulator
@@ -247,6 +248,28 @@ pub async fn start_monitoring_with_sync(
                                 }
                             } else {
                                 warn!("Could not find Dolphin save directory");
+                            }
+                        }
+                    }
+                    "RPCS3" => {
+                        if let process::EmulatorProcess::RPCS3 { .. } = &emulator {
+                            let rpcs3 = crate::emulators::rpcs3::RPCS3::new();
+                            if let Some(save_dir) = rpcs3.get_save_directory() {
+                                let save_dir = PathBuf::from(save_dir);
+                                match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                                    Ok((mut watcher, receiver)) => {
+                                        if let Err(e) = watcher.start().await {
+                                            warn!("Failed to start save watcher: {}", e);
+                                        } else {
+                                            info!("Started save watcher for RPCS3");
+                                            save_watcher = Some(watcher);
+                                            save_receiver = Some(receiver);
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to create save watcher: {}", e),
+                                }
+                            } else {
+                                warn!("Could not find RPCS3 save directory");
                             }
                         }
                     }
@@ -304,6 +327,30 @@ pub async fn start_monitoring_with_sync(
                         }
                         
                         let _ = sender.send(MonitorEvent::GameDetected("Unknown GameCube/Wii Game".to_string())).await;
+                    }
+                }
+                process::EmulatorProcess::RPCS3 { pid, exe_path } => {
+                    debug!("RPCS3 running - PID: {}, Path: {}", pid, exe_path);
+                    
+                    // Try to get the actual game name
+                    if let Some(game_name) = process::get_rpcs3_game_name(*pid) {
+                        current_game_name = Some(game_name.clone());
+                        
+                        // Update SaveWatcher with the current game name
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(Some(game_name.clone())).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
+                    } else {
+                        current_game_name = Some("Unknown PS3 Game".to_string());
+                        
+                        // Clear game name in SaveWatcher
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(None).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected("Unknown PS3 Game".to_string())).await;
                     }
                 }
             }

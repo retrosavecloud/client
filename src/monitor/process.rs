@@ -14,8 +14,11 @@ pub enum EmulatorProcess {
         pid: u32,
         exe_path: String,
     },
+    RPCS3 {
+        pid: u32,
+        exe_path: String,
+    },
     // Future emulators
-    // RPCS3 { pid: u32, exe_path: String },
 }
 
 pub fn detect_running_emulators() -> Option<EmulatorProcess> {
@@ -50,6 +53,21 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .unwrap_or_else(|| "unknown".to_string());
             
             return Some(EmulatorProcess::Dolphin {
+                pid: pid.as_u32(),
+                exe_path,
+            });
+        }
+        
+        // Check for RPCS3
+        if process_name.contains("rpcs3") {
+            debug!("Found RPCS3 process: {:?} (PID: {})", process.name(), pid);
+            
+            let exe_path = process
+                .exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            return Some(EmulatorProcess::RPCS3 {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -665,6 +683,180 @@ fn get_dolphin_game_from_config() -> Option<String> {
                         let path = line.trim_start_matches("LastFilename = ");
                         if let Some(filename) = Path::new(path).file_stem() {
                             return Some(filename.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+/// Try to get the current game name from RPCS3
+pub fn get_rpcs3_game_name(pid: u32) -> Option<String> {
+    info!("Attempting to detect RPCS3 game for PID {}", pid);
+    
+    // Method 1: Try to get from window title
+    if let Some(game_name) = get_rpcs3_game_from_window_title(pid) {
+        info!("Got RPCS3 game from window title: {}", game_name);
+        return Some(game_name);
+    }
+    
+    // Method 2: Check RPCS3 log files for recently launched game
+    if let Some(game_info) = get_rpcs3_game_from_logs() {
+        info!("Got RPCS3 game from logs: {}", game_info);
+        return Some(game_info);
+    }
+    
+    None
+}
+
+fn get_rpcs3_game_from_window_title(_pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            let display = x11::xlib::XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return None;
+            }
+            
+            let root = x11::xlib::XDefaultRootWindow(display);
+            let mut root_return = 0;
+            let mut parent_return = 0;
+            let mut children: *mut x11::xlib::Window = std::ptr::null_mut();
+            let mut n_children = 0;
+            
+            if x11::xlib::XQueryTree(
+                display,
+                root,
+                &mut root_return,
+                &mut parent_return,
+                &mut children,
+                &mut n_children
+            ) == 0 {
+                x11::xlib::XCloseDisplay(display);
+                return None;
+            }
+            
+            let windows = std::slice::from_raw_parts(children, n_children as usize);
+            let net_wm_name = x11::xlib::XInternAtom(
+                display,
+                b"_NET_WM_NAME\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            let utf8_string = x11::xlib::XInternAtom(
+                display,
+                b"UTF8_STRING\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            
+            for &window in windows {
+                // Get window class to check if it's RPCS3
+                let mut class_hint = x11::xlib::XClassHint {
+                    res_name: std::ptr::null_mut(),
+                    res_class: std::ptr::null_mut(),
+                };
+                
+                if x11::xlib::XGetClassHint(display, window, &mut class_hint) != 0 {
+                    let is_rpcs3 = if !class_hint.res_name.is_null() {
+                        let class_name = std::ffi::CStr::from_ptr(class_hint.res_name)
+                            .to_string_lossy()
+                            .to_lowercase();
+                        x11::xlib::XFree(class_hint.res_name as *mut _);
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        class_name.contains("rpcs3")
+                    } else {
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        false
+                    };
+                    
+                    if is_rpcs3 {
+                        // Get window title
+                        let mut title_type = 0;
+                        let mut title_format = 0;
+                        let mut title_items = 0;
+                        let mut title_bytes = 0;
+                        let mut title_prop: *mut u8 = std::ptr::null_mut();
+                        
+                        if x11::xlib::XGetWindowProperty(
+                            display,
+                            window,
+                            net_wm_name,
+                            0,
+                            1024,
+                            x11::xlib::False,
+                            utf8_string,
+                            &mut title_type,
+                            &mut title_format,
+                            &mut title_items,
+                            &mut title_bytes,
+                            &mut title_prop
+                        ) == 0 && !title_prop.is_null() {
+                            let title = std::ffi::CStr::from_ptr(title_prop as *const i8)
+                                .to_string_lossy()
+                                .to_string();
+                            x11::xlib::XFree(title_prop as *mut _);
+                            
+                            // RPCS3 window title format: "Game Title [GAMEID] - RPCS3"
+                            if let Some(game_part) = title.split(" - RPCS3").next() {
+                                if !game_part.is_empty() && game_part != "RPCS3" {
+                                    x11::xlib::XFree(children as *mut _);
+                                    x11::xlib::XCloseDisplay(display);
+                                    return Some(game_part.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            x11::xlib::XFree(children as *mut _);
+            x11::xlib::XCloseDisplay(display);
+        }
+    }
+    
+    None
+}
+
+fn get_rpcs3_game_from_logs() -> Option<String> {
+    // Try to read RPCS3 log files to find recently launched game
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let log_paths = [
+                format!("{}/.config/rpcs3/RPCS3.log", home),
+                format!("{}/.var/app/net.rpcs3.RPCS3/config/rpcs3/RPCS3.log", home),
+            ];
+            
+            for log_path in &log_paths {
+                if let Ok(content) = fs::read_to_string(log_path) {
+                    // Look for game boot messages in the log
+                    for line in content.lines().rev() {
+                        if line.contains("Boot successful") || line.contains("Game:") {
+                            // Extract game name from log line
+                            if let Some(game_info) = line.split("Game:").nth(1) {
+                                return Some(game_info.trim().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let log_path = format!("{}\\RPCS3\\RPCS3.log", home);
+            if let Ok(content) = fs::read_to_string(&log_path) {
+                for line in content.lines().rev() {
+                    if line.contains("Boot successful") || line.contains("Game:") {
+                        if let Some(game_info) = line.split("Game:").nth(1) {
+                            return Some(game_info.trim().to_string());
                         }
                     }
                 }

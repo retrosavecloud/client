@@ -1,5 +1,6 @@
 pub mod pcsx2;
 pub mod dolphin;
+pub mod rpcs3;
 
 use async_trait::async_trait;
 use anyhow::Result;
