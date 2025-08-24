@@ -22,6 +22,10 @@ pub enum EmulatorProcess {
         pid: u32,
         exe_path: String,
     },
+    RetroArch {
+        pid: u32,
+        exe_path: String,
+    },
     // Future emulators
 }
 
@@ -87,6 +91,21 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .unwrap_or_else(|| "unknown".to_string());
             
             return Some(EmulatorProcess::Citra {
+                pid: pid.as_u32(),
+                exe_path,
+            });
+        }
+        
+        // Check for RetroArch
+        if process_name.contains("retroarch") {
+            debug!("Found RetroArch process: {:?} (PID: {})", process.name(), pid);
+            
+            let exe_path = process
+                .exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            return Some(EmulatorProcess::RetroArch {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -1056,6 +1075,189 @@ fn get_citra_game_from_config() -> Option<String> {
                             if let Some(filename) = Path::new(path_part).file_stem() {
                                 return Some(filename.to_string_lossy().to_string());
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Try to get the current game name from RetroArch
+pub fn get_retroarch_game_name(pid: u32) -> Option<String> {
+    info!("Attempting to detect RetroArch game for PID {}", pid);
+    
+    // Method 1: Try to get from window title
+    if let Some(game_name) = get_retroarch_game_from_window_title(pid) {
+        info!("Got RetroArch game from window title: {}", game_name);
+        return Some(game_name);
+    }
+    
+    // Method 2: Check RetroArch history/recent files
+    if let Some(game_info) = get_retroarch_game_from_history() {
+        info!("Got RetroArch game from history: {}", game_info);
+        return Some(game_info);
+    }
+    
+    None
+}
+
+fn get_retroarch_game_from_window_title(_pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            let display = x11::xlib::XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return None;
+            }
+            
+            let root = x11::xlib::XDefaultRootWindow(display);
+            let mut root_return = 0;
+            let mut parent_return = 0;
+            let mut children: *mut x11::xlib::Window = std::ptr::null_mut();
+            let mut n_children = 0;
+            
+            if x11::xlib::XQueryTree(
+                display,
+                root,
+                &mut root_return,
+                &mut parent_return,
+                &mut children,
+                &mut n_children
+            ) == 0 {
+                x11::xlib::XCloseDisplay(display);
+                return None;
+            }
+            
+            let windows = std::slice::from_raw_parts(children, n_children as usize);
+            let net_wm_name = x11::xlib::XInternAtom(
+                display,
+                b"_NET_WM_NAME\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            let utf8_string = x11::xlib::XInternAtom(
+                display,
+                b"UTF8_STRING\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            
+            for &window in windows {
+                // Get window class to check if it's RetroArch
+                let mut class_hint = x11::xlib::XClassHint {
+                    res_name: std::ptr::null_mut(),
+                    res_class: std::ptr::null_mut(),
+                };
+                
+                if x11::xlib::XGetClassHint(display, window, &mut class_hint) != 0 {
+                    let is_retroarch = if !class_hint.res_name.is_null() {
+                        let class_name = std::ffi::CStr::from_ptr(class_hint.res_name)
+                            .to_string_lossy()
+                            .to_lowercase();
+                        x11::xlib::XFree(class_hint.res_name as *mut _);
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        class_name.contains("retroarch")
+                    } else {
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        false
+                    };
+                    
+                    if is_retroarch {
+                        // Get window title
+                        let mut title_type = 0;
+                        let mut title_format = 0;
+                        let mut title_items = 0;
+                        let mut title_bytes = 0;
+                        let mut title_prop: *mut u8 = std::ptr::null_mut();
+                        
+                        if x11::xlib::XGetWindowProperty(
+                            display,
+                            window,
+                            net_wm_name,
+                            0,
+                            1024,
+                            x11::xlib::False,
+                            utf8_string,
+                            &mut title_type,
+                            &mut title_format,
+                            &mut title_items,
+                            &mut title_bytes,
+                            &mut title_prop
+                        ) == 0 && !title_prop.is_null() {
+                            let title = std::ffi::CStr::from_ptr(title_prop as *const i8)
+                                .to_string_lossy()
+                                .to_string();
+                            x11::xlib::XFree(title_prop as *mut _);
+                            
+                            // RetroArch window title format varies, but often includes game name
+                            // Format examples: "RetroArch - Game Name" or "Game Name - RetroArch Core"
+                            if title.contains("RetroArch") {
+                                // Try to extract game name
+                                if let Some(game_part) = title.split(" - ").find(|p| !p.contains("RetroArch")) {
+                                    if !game_part.is_empty() {
+                                        x11::xlib::XFree(children as *mut _);
+                                        x11::xlib::XCloseDisplay(display);
+                                        return Some(game_part.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            x11::xlib::XFree(children as *mut _);
+            x11::xlib::XCloseDisplay(display);
+        }
+    }
+    
+    None
+}
+
+fn get_retroarch_game_from_history() -> Option<String> {
+    // Try to read recent content from RetroArch's history
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let history_paths = [
+                format!("{}/.var/app/org.libretro.RetroArch/config/retroarch/content_history.lpl", home),
+                format!("{}/.config/retroarch/content_history.lpl", home),
+            ];
+            
+            for history_path in &history_paths {
+                if let Ok(content) = fs::read_to_string(history_path) {
+                    // RetroArch history is in JSON format
+                    // Look for the most recent entry
+                    if let Some(start) = content.find("\"path\": \"") {
+                        let path_start = start + 9;
+                        if let Some(end) = content[path_start..].find("\"") {
+                            let game_path = &content[path_start..path_start + end];
+                            if let Some(filename) = Path::new(game_path).file_stem() {
+                                return Some(filename.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let history_path = format!("{}\\RetroArch\\content_history.lpl", appdata);
+            if let Ok(content) = fs::read_to_string(&history_path) {
+                if let Some(start) = content.find("\"path\": \"") {
+                    let path_start = start + 9;
+                    if let Some(end) = content[path_start..].find("\"") {
+                        let game_path = &content[path_start..path_start + end];
+                        if let Some(filename) = Path::new(game_path).file_stem() {
+                            return Some(filename.to_string_lossy().to_string());
                         }
                     }
                 }

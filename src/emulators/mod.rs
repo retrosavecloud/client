@@ -2,6 +2,7 @@ pub mod pcsx2;
 pub mod dolphin;
 pub mod rpcs3;
 pub mod citra;
+pub mod retroarch;
 
 use async_trait::async_trait;
 use anyhow::Result;

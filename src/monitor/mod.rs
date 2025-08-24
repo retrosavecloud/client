@@ -201,6 +201,7 @@ pub async fn start_monitoring_with_sync(
                 process::EmulatorProcess::Dolphin { .. } => "Dolphin",
                 process::EmulatorProcess::RPCS3 { .. } => "RPCS3",
                 process::EmulatorProcess::Citra { .. } => "Citra",
+                process::EmulatorProcess::RetroArch { .. } => "RetroArch",
             };
             
             // Check if this is a newly detected emulator
@@ -293,6 +294,28 @@ pub async fn start_monitoring_with_sync(
                                 }
                             } else {
                                 warn!("Could not find Citra save directory");
+                            }
+                        }
+                    }
+                    "RetroArch" => {
+                        if let process::EmulatorProcess::RetroArch { .. } = &emulator {
+                            let retroarch = crate::emulators::retroarch::RetroArch::new();
+                            if let Some(save_dir) = retroarch.get_save_directory() {
+                                let save_dir = PathBuf::from(save_dir);
+                                match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                                    Ok((mut watcher, receiver)) => {
+                                        if let Err(e) = watcher.start().await {
+                                            warn!("Failed to start save watcher: {}", e);
+                                        } else {
+                                            info!("Started save watcher for RetroArch");
+                                            save_watcher = Some(watcher);
+                                            save_receiver = Some(receiver);
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to create save watcher: {}", e),
+                                }
+                            } else {
+                                warn!("Could not find RetroArch save directory");
                             }
                         }
                     }
@@ -398,6 +421,30 @@ pub async fn start_monitoring_with_sync(
                         }
                         
                         let _ = sender.send(MonitorEvent::GameDetected("Unknown 3DS Game".to_string())).await;
+                    }
+                }
+                process::EmulatorProcess::RetroArch { pid, exe_path } => {
+                    debug!("RetroArch running - PID: {}, Path: {}", pid, exe_path);
+                    
+                    // Try to get the actual game name
+                    if let Some(game_name) = process::get_retroarch_game_name(*pid) {
+                        current_game_name = Some(game_name.clone());
+                        
+                        // Update SaveWatcher with the current game name
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(Some(game_name.clone())).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
+                    } else {
+                        current_game_name = Some("Unknown RetroArch Game".to_string());
+                        
+                        // Clear game name in SaveWatcher
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(None).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected("Unknown RetroArch Game".to_string())).await;
                     }
                 }
             }
