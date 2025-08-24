@@ -3,6 +3,9 @@ pub mod dolphin;
 pub mod rpcs3;
 pub mod citra;
 pub mod retroarch;
+pub mod yuzu_ryujinx;
+pub mod ppsspp;
+pub mod auto_detect;
 
 use async_trait::async_trait;
 use anyhow::Result;

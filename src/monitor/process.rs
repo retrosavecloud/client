@@ -26,12 +26,25 @@ pub enum EmulatorProcess {
         pid: u32,
         exe_path: String,
     },
+    Yuzu {
+        pid: u32,
+        exe_path: String,
+    },
+    Ryujinx {
+        pid: u32,
+        exe_path: String,
+    },
+    PPSSPP {
+        pid: u32,
+        exe_path: String,
+    },
     // Future emulators
 }
 
-pub fn detect_running_emulators() -> Option<EmulatorProcess> {
+pub fn detect_running_emulators() -> Vec<EmulatorProcess> {
     let mut system = System::new_all();
     system.refresh_processes(ProcessesToUpdate::All, true);
+    let mut emulators = Vec::new();
     
     for (pid, process) in system.processes() {
         let process_name = process.name().to_string_lossy().to_lowercase();
@@ -45,7 +58,7 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             
-            return Some(EmulatorProcess::PCSX2 {
+            emulators.push(EmulatorProcess::PCSX2 {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -60,7 +73,7 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             
-            return Some(EmulatorProcess::Dolphin {
+            emulators.push(EmulatorProcess::Dolphin {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -75,7 +88,7 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             
-            return Some(EmulatorProcess::RPCS3 {
+            emulators.push(EmulatorProcess::RPCS3 {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -90,7 +103,7 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             
-            return Some(EmulatorProcess::Citra {
+            emulators.push(EmulatorProcess::Citra {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -105,7 +118,52 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
             
-            return Some(EmulatorProcess::RetroArch {
+            emulators.push(EmulatorProcess::RetroArch {
+                pid: pid.as_u32(),
+                exe_path,
+            });
+        }
+        
+        // Check for Yuzu
+        if process_name.contains("yuzu") {
+            debug!("Found Yuzu process: {:?} (PID: {})", process.name(), pid);
+            
+            let exe_path = process
+                .exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            emulators.push(EmulatorProcess::Yuzu {
+                pid: pid.as_u32(),
+                exe_path,
+            });
+        }
+        
+        // Check for Ryujinx
+        if process_name.contains("ryujinx") {
+            debug!("Found Ryujinx process: {:?} (PID: {})", process.name(), pid);
+            
+            let exe_path = process
+                .exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            emulators.push(EmulatorProcess::Ryujinx {
+                pid: pid.as_u32(),
+                exe_path,
+            });
+        }
+        
+        // Check for PPSSPP
+        if process_name.contains("ppsspp") {
+            debug!("Found PPSSPP process: {:?} (PID: {})", process.name(), pid);
+            
+            let exe_path = process
+                .exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            emulators.push(EmulatorProcess::PPSSPP {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -114,7 +172,7 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
         // Future: Add more emulator checks here
     }
     
-    None
+    emulators
 }
 
 pub fn get_pcsx2_save_directory() -> Option<String> {
@@ -1266,4 +1324,471 @@ fn get_retroarch_game_from_history() -> Option<String> {
     }
     
     None
+}
+
+/// Try to get the current game name from Yuzu
+pub fn get_yuzu_game_name(pid: u32) -> Option<String> {
+    info!("Attempting to detect Yuzu game for PID {}", pid);
+    
+    // Method 1: Try to get from window title
+    if let Some(game_name) = get_yuzu_game_from_window_title(pid) {
+        info!("Got Yuzu game from window title: {}", game_name);
+        return Some(game_name);
+    }
+    
+    None
+}
+
+/// Try to get the current game name from Ryujinx
+pub fn get_ryujinx_game_name(pid: u32) -> Option<String> {
+    info!("Attempting to detect Ryujinx game for PID {}", pid);
+    
+    // Method 1: Try to get from window title
+    if let Some(game_name) = get_ryujinx_game_from_window_title(pid) {
+        info!("Got Ryujinx game from window title: {}", game_name);
+        return Some(game_name);
+    }
+    
+    None
+}
+
+fn get_yuzu_game_from_window_title(_pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            let display = x11::xlib::XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return None;
+            }
+            
+            let root = x11::xlib::XDefaultRootWindow(display);
+            let mut root_return = 0;
+            let mut parent_return = 0;
+            let mut children: *mut x11::xlib::Window = std::ptr::null_mut();
+            let mut n_children = 0;
+            
+            if x11::xlib::XQueryTree(
+                display,
+                root,
+                &mut root_return,
+                &mut parent_return,
+                &mut children,
+                &mut n_children
+            ) == 0 {
+                x11::xlib::XCloseDisplay(display);
+                return None;
+            }
+            
+            let windows = std::slice::from_raw_parts(children, n_children as usize);
+            let net_wm_name = x11::xlib::XInternAtom(
+                display,
+                b"_NET_WM_NAME\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            let utf8_string = x11::xlib::XInternAtom(
+                display,
+                b"UTF8_STRING\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            
+            for &window in windows {
+                // Get window class to check if it's Yuzu
+                let mut class_hint = x11::xlib::XClassHint {
+                    res_name: std::ptr::null_mut(),
+                    res_class: std::ptr::null_mut(),
+                };
+                
+                if x11::xlib::XGetClassHint(display, window, &mut class_hint) != 0 {
+                    let is_yuzu = if !class_hint.res_name.is_null() {
+                        let class_name = std::ffi::CStr::from_ptr(class_hint.res_name)
+                            .to_string_lossy()
+                            .to_lowercase();
+                        x11::xlib::XFree(class_hint.res_name as *mut _);
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        class_name.contains("yuzu")
+                    } else {
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        false
+                    };
+                    
+                    if is_yuzu {
+                        // Get window title
+                        let mut title_type = 0;
+                        let mut title_format = 0;
+                        let mut title_items = 0;
+                        let mut title_bytes = 0;
+                        let mut title_prop: *mut u8 = std::ptr::null_mut();
+                        
+                        if x11::xlib::XGetWindowProperty(
+                            display,
+                            window,
+                            net_wm_name,
+                            0,
+                            1024,
+                            x11::xlib::False,
+                            utf8_string,
+                            &mut title_type,
+                            &mut title_format,
+                            &mut title_items,
+                            &mut title_bytes,
+                            &mut title_prop
+                        ) == 0 && !title_prop.is_null() {
+                            let title = std::ffi::CStr::from_ptr(title_prop as *const i8)
+                                .to_string_lossy()
+                                .to_string();
+                            x11::xlib::XFree(title_prop as *mut _);
+                            
+                            // Yuzu window title format: "yuzu | Game Title"
+                            if let Some(game_part) = title.split(" | ").nth(1) {
+                                if !game_part.is_empty() {
+                                    x11::xlib::XFree(children as *mut _);
+                                    x11::xlib::XCloseDisplay(display);
+                                    return Some(game_part.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            x11::xlib::XFree(children as *mut _);
+            x11::xlib::XCloseDisplay(display);
+        }
+    }
+    
+    None
+}
+
+fn get_ryujinx_game_from_window_title(_pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            let display = x11::xlib::XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return None;
+            }
+            
+            let root = x11::xlib::XDefaultRootWindow(display);
+            let mut root_return = 0;
+            let mut parent_return = 0;
+            let mut children: *mut x11::xlib::Window = std::ptr::null_mut();
+            let mut n_children = 0;
+            
+            if x11::xlib::XQueryTree(
+                display,
+                root,
+                &mut root_return,
+                &mut parent_return,
+                &mut children,
+                &mut n_children
+            ) == 0 {
+                x11::xlib::XCloseDisplay(display);
+                return None;
+            }
+            
+            let windows = std::slice::from_raw_parts(children, n_children as usize);
+            let net_wm_name = x11::xlib::XInternAtom(
+                display,
+                b"_NET_WM_NAME\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            let utf8_string = x11::xlib::XInternAtom(
+                display,
+                b"UTF8_STRING\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            
+            for &window in windows {
+                // Get window class to check if it's Ryujinx
+                let mut class_hint = x11::xlib::XClassHint {
+                    res_name: std::ptr::null_mut(),
+                    res_class: std::ptr::null_mut(),
+                };
+                
+                if x11::xlib::XGetClassHint(display, window, &mut class_hint) != 0 {
+                    let is_ryujinx = if !class_hint.res_name.is_null() {
+                        let class_name = std::ffi::CStr::from_ptr(class_hint.res_name)
+                            .to_string_lossy()
+                            .to_lowercase();
+                        x11::xlib::XFree(class_hint.res_name as *mut _);
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        class_name.contains("ryujinx")
+                    } else {
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        false
+                    };
+                    
+                    if is_ryujinx {
+                        // Get window title
+                        let mut title_type = 0;
+                        let mut title_format = 0;
+                        let mut title_items = 0;
+                        let mut title_bytes = 0;
+                        let mut title_prop: *mut u8 = std::ptr::null_mut();
+                        
+                        if x11::xlib::XGetWindowProperty(
+                            display,
+                            window,
+                            net_wm_name,
+                            0,
+                            1024,
+                            x11::xlib::False,
+                            utf8_string,
+                            &mut title_type,
+                            &mut title_format,
+                            &mut title_items,
+                            &mut title_bytes,
+                            &mut title_prop
+                        ) == 0 && !title_prop.is_null() {
+                            let title = std::ffi::CStr::from_ptr(title_prop as *const i8)
+                                .to_string_lossy()
+                                .to_string();
+                            x11::xlib::XFree(title_prop as *mut _);
+                            
+                            // Ryujinx window title format: "Ryujinx - Game Title"
+                            if let Some(game_part) = title.split(" - ").nth(1) {
+                                if !game_part.is_empty() {
+                                    x11::xlib::XFree(children as *mut _);
+                                    x11::xlib::XCloseDisplay(display);
+                                    return Some(game_part.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            x11::xlib::XFree(children as *mut _);
+            x11::xlib::XCloseDisplay(display);
+        }
+    }
+    
+    None
+}
+
+pub fn get_ppsspp_game_name(pid: u32) -> Option<String> {
+    // Method 1: Check window title
+    if let Some(game_info) = get_ppsspp_game_from_window_title(pid) {
+        info!("Got PPSSPP game from window title: {}", game_info);
+        return Some(game_info);
+    }
+    
+    // Method 2: Check recent save files
+    if let Some(game_info) = get_ppsspp_game_from_saves() {
+        info!("Got PPSSPP game from recent saves: {}", game_info);
+        return Some(game_info);
+    }
+    
+    None
+}
+
+fn get_ppsspp_game_from_window_title(_pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            let display = x11::xlib::XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return None;
+            }
+            
+            let root = x11::xlib::XDefaultRootWindow(display);
+            let mut root_return = 0;
+            let mut parent_return = 0;
+            let mut children: *mut x11::xlib::Window = std::ptr::null_mut();
+            let mut n_children = 0;
+            
+            if x11::xlib::XQueryTree(
+                display,
+                root,
+                &mut root_return,
+                &mut parent_return,
+                &mut children,
+                &mut n_children
+            ) == 0 {
+                x11::xlib::XCloseDisplay(display);
+                return None;
+            }
+            
+            let windows = std::slice::from_raw_parts(children, n_children as usize);
+            let net_wm_name = x11::xlib::XInternAtom(
+                display,
+                b"_NET_WM_NAME\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            let utf8_string = x11::xlib::XInternAtom(
+                display,
+                b"UTF8_STRING\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            
+            for &window in windows {
+                let mut actual_type = 0;
+                let mut actual_format = 0;
+                let mut n_items = 0;
+                let mut bytes_after = 0;
+                let mut prop: *mut u8 = std::ptr::null_mut();
+                
+                if x11::xlib::XGetWindowProperty(
+                    display,
+                    window,
+                    net_wm_name,
+                    0,
+                    1024,
+                    x11::xlib::False,
+                    utf8_string,
+                    &mut actual_type,
+                    &mut actual_format,
+                    &mut n_items,
+                    &mut bytes_after,
+                    &mut prop
+                ) == 0 && !prop.is_null() {
+                    let title = std::ffi::CStr::from_ptr(prop as *const i8)
+                        .to_string_lossy()
+                        .to_string();
+                    
+                    x11::xlib::XFree(prop as *mut _);
+                    
+                    // PPSSPP window titles typically show game name
+                    if title.to_lowercase().contains("ppsspp") {
+                        // Extract game name from title
+                        // Format varies but often: "PPSSPP - Game Name"
+                        if let Some(idx) = title.find(" - ") {
+                            let game = title[(idx + 3)..].trim().to_string();
+                            if !game.is_empty() {
+                                x11::xlib::XFree(children as *mut _);
+                                x11::xlib::XCloseDisplay(display);
+                                return Some(game);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            x11::xlib::XFree(children as *mut _);
+            x11::xlib::XCloseDisplay(display);
+        }
+    }
+    
+    None
+}
+
+fn get_ppsspp_game_from_saves() -> Option<String> {
+    let save_dir = get_ppsspp_save_directory()?;
+    let save_path = Path::new(&save_dir);
+    
+    let mut recent_game = None;
+    let mut recent_time = SystemTime::UNIX_EPOCH;
+    
+    if let Ok(entries) = fs::read_dir(&save_path) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Check for PARAM.SFO file which indicates a valid save
+                let param_file = path.join("PARAM.SFO");
+                if param_file.exists() {
+                    if let Ok(metadata) = fs::metadata(&path) {
+                        if let Ok(modified) = metadata.modified() {
+                            if modified > recent_time {
+                                recent_time = modified;
+                                if let Some(dir_name) = path.file_name() {
+                                    let name = dir_name.to_string_lossy();
+                                    // Extract game ID from save directory name
+                                    let game_id = name.split('_').next().unwrap_or(&name);
+                                    recent_game = get_ppsspp_game_name_from_id(game_id)
+                                        .or_else(|| Some(format!("PSP Game ({})", game_id)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    recent_game
+}
+
+fn get_ppsspp_save_directory() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(documents) = std::env::var("USERPROFILE") {
+            let save_path = format!("{}\\Documents\\PPSSPP\\PSP\\SAVEDATA", documents);
+            if Path::new(&save_path).exists() {
+                return Some(save_path);
+            }
+        }
+        
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let save_path = format!("{}\\PPSSPP\\PSP\\SAVEDATA", appdata);
+            if Path::new(&save_path).exists() {
+                return Some(save_path);
+            }
+        }
+    }
+    
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            // Check Flatpak location first
+            let flatpak_path = format!("{}/.var/app/org.ppsspp.PPSSPP/.config/ppsspp/PSP/SAVEDATA", home);
+            if Path::new(&flatpak_path).exists() {
+                return Some(flatpak_path);
+            }
+            
+            // Check standard location
+            let save_path = format!("{}/.config/ppsspp/PSP/SAVEDATA", home);
+            if Path::new(&save_path).exists() {
+                return Some(save_path);
+            }
+            
+            // Check old location
+            let old_path = format!("{}/.ppsspp/PSP/SAVEDATA", home);
+            if Path::new(&old_path).exists() {
+                return Some(old_path);
+            }
+        }
+    }
+    
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let save_path = format!("{}/Library/Application Support/PPSSPP/PSP/SAVEDATA", home);
+            if Path::new(&save_path).exists() {
+                return Some(save_path);
+            }
+        }
+    }
+    
+    None
+}
+
+fn get_ppsspp_game_name_from_id(game_id: &str) -> Option<String> {
+    match game_id {
+        // US releases
+        "ULUS10336" => Some("God of War: Chains of Olympus".to_string()),
+        "ULUS10391" => Some("God of War: Ghost of Sparta".to_string()),
+        "ULUS10041" => Some("Grand Theft Auto: Liberty City Stories".to_string()),
+        "ULUS10160" => Some("Grand Theft Auto: Vice City Stories".to_string()),
+        "ULUS10566" => Some("Kingdom Hearts: Birth by Sleep".to_string()),
+        "ULUS10487" => Some("Metal Gear Solid: Peace Walker".to_string()),
+        "ULUS10362" => Some("Crisis Core: Final Fantasy VII".to_string()),
+        
+        // EU releases
+        "ULES00151" => Some("Grand Theft Auto: Liberty City Stories".to_string()),
+        "ULES00502" => Some("Grand Theft Auto: Vice City Stories".to_string()),
+        
+        // JP releases
+        "ULJM05800" => Some("Monster Hunter Portable 3rd".to_string()),
+        "ULJM05500" => Some("Monster Hunter Portable 2nd G".to_string()),
+        
+        _ => None,
+    }
 }

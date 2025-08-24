@@ -5,3 +5,4 @@ pub mod ui;
 pub mod storage;
 pub mod hotkey;
 pub mod sync;
+pub mod launchers;

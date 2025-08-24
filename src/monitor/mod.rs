@@ -195,13 +195,17 @@ pub async fn start_monitoring_with_sync(
         }
         
         // Check for running emulators
-        if let Some(emulator) = process::detect_running_emulators() {
+        let emulators = process::detect_running_emulators();
+        if let Some(emulator) = emulators.first() {
             let emulator_name = match &emulator {
                 process::EmulatorProcess::PCSX2 { .. } => "PCSX2",
                 process::EmulatorProcess::Dolphin { .. } => "Dolphin",
                 process::EmulatorProcess::RPCS3 { .. } => "RPCS3",
                 process::EmulatorProcess::Citra { .. } => "Citra",
                 process::EmulatorProcess::RetroArch { .. } => "RetroArch",
+                process::EmulatorProcess::Yuzu { .. } => "Yuzu",
+                process::EmulatorProcess::Ryujinx { .. } => "Ryujinx",
+                process::EmulatorProcess::PPSSPP { .. } => "PPSSPP",
             };
             
             // Check if this is a newly detected emulator
@@ -316,6 +320,74 @@ pub async fn start_monitoring_with_sync(
                                 }
                             } else {
                                 warn!("Could not find RetroArch save directory");
+                            }
+                        }
+                    }
+                    "Yuzu" => {
+                        if let process::EmulatorProcess::Yuzu { .. } = &emulator {
+                            let yuzu = crate::emulators::yuzu_ryujinx::YuzuRyujinx::new_yuzu();
+                            if let Some(save_dir) = yuzu.get_save_directory() {
+                                let save_dir = PathBuf::from(save_dir);
+                                match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                                    Ok((mut watcher, receiver)) => {
+                                        if let Err(e) = watcher.start().await {
+                                            warn!("Failed to start save watcher: {}", e);
+                                        } else {
+                                            info!("Started save watcher for Yuzu");
+                                            save_watcher = Some(watcher);
+                                            save_receiver = Some(receiver);
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to create save watcher: {}", e),
+                                }
+                            } else {
+                                warn!("Could not find Yuzu save directory");
+                            }
+                        }
+                    }
+                    "Ryujinx" => {
+                        if let process::EmulatorProcess::Ryujinx { .. } = &emulator {
+                            let ryujinx = crate::emulators::yuzu_ryujinx::YuzuRyujinx::new_ryujinx();
+                            if let Some(save_dir) = ryujinx.get_save_directory() {
+                                let save_dir = PathBuf::from(save_dir);
+                                match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                                    Ok((mut watcher, receiver)) => {
+                                        if let Err(e) = watcher.start().await {
+                                            warn!("Failed to start save watcher: {}", e);
+                                        } else {
+                                            info!("Started save watcher for Ryujinx");
+                                            save_watcher = Some(watcher);
+                                            save_receiver = Some(receiver);
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to create save watcher: {}", e),
+                                }
+                            } else {
+                                warn!("Could not find Ryujinx save directory");
+                            }
+                        }
+                    }
+                    "PPSSPP" => {
+                        if let process::EmulatorProcess::PPSSPP { .. } = &emulator {
+                            let ppsspp = crate::emulators::ppsspp::PPSSPP::new();
+                            if let Some(save_dir) = ppsspp.get_save_directory() {
+                                info!("Setting up save monitoring for PPSSPP saves at: {}", save_dir);
+                                
+                                let save_dir = PathBuf::from(save_dir);
+                                match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                                    Ok((mut watcher, receiver)) => {
+                                        if let Err(e) = watcher.start().await {
+                                            warn!("Failed to start save watcher: {}", e);
+                                        } else {
+                                            info!("Started save watcher for PPSSPP");
+                                            save_watcher = Some(watcher);
+                                            save_receiver = Some(receiver);
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to create save watcher: {}", e),
+                                }
+                            } else {
+                                warn!("Could not find PPSSPP save directory");
                             }
                         }
                     }
@@ -445,6 +517,78 @@ pub async fn start_monitoring_with_sync(
                         }
                         
                         let _ = sender.send(MonitorEvent::GameDetected("Unknown RetroArch Game".to_string())).await;
+                    }
+                }
+                process::EmulatorProcess::Yuzu { pid, exe_path } => {
+                    debug!("Yuzu running - PID: {}, Path: {}", pid, exe_path);
+                    
+                    // Try to get the actual game name
+                    if let Some(game_name) = process::get_yuzu_game_name(*pid) {
+                        current_game_name = Some(game_name.clone());
+                        
+                        // Update SaveWatcher with the current game name
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(Some(game_name.clone())).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
+                    } else {
+                        current_game_name = Some("Unknown Switch Game".to_string());
+                        
+                        // Clear game name in SaveWatcher
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(None).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected("Unknown Switch Game".to_string())).await;
+                    }
+                }
+                process::EmulatorProcess::Ryujinx { pid, exe_path } => {
+                    debug!("Ryujinx running - PID: {}, Path: {}", pid, exe_path);
+                    
+                    // Try to get the actual game name
+                    if let Some(game_name) = process::get_ryujinx_game_name(*pid) {
+                        current_game_name = Some(game_name.clone());
+                        
+                        // Update SaveWatcher with the current game name
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(Some(game_name.clone())).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
+                    } else {
+                        current_game_name = Some("Unknown Switch Game".to_string());
+                        
+                        // Clear game name in SaveWatcher
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(None).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected("Unknown Switch Game".to_string())).await;
+                    }
+                }
+                process::EmulatorProcess::PPSSPP { pid, exe_path } => {
+                    debug!("PPSSPP running - PID: {}, Path: {}", pid, exe_path);
+                    
+                    // Try to get the actual game name
+                    if let Some(game_name) = process::get_ppsspp_game_name(*pid) {
+                        current_game_name = Some(game_name.clone());
+                        
+                        // Update SaveWatcher with the current game name
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(Some(game_name.clone())).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
+                    } else {
+                        current_game_name = Some("Unknown PSP Game".to_string());
+                        
+                        // Clear game name in SaveWatcher
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(None).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected("Unknown PSP Game".to_string())).await;
                     }
                 }
             }
