@@ -18,6 +18,10 @@ pub enum EmulatorProcess {
         pid: u32,
         exe_path: String,
     },
+    Citra {
+        pid: u32,
+        exe_path: String,
+    },
     // Future emulators
 }
 
@@ -68,6 +72,21 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .unwrap_or_else(|| "unknown".to_string());
             
             return Some(EmulatorProcess::RPCS3 {
+                pid: pid.as_u32(),
+                exe_path,
+            });
+        }
+        
+        // Check for Citra
+        if process_name.contains("citra") {
+            debug!("Found Citra process: {:?} (PID: {})", process.name(), pid);
+            
+            let exe_path = process
+                .exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            return Some(EmulatorProcess::Citra {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -857,6 +876,186 @@ fn get_rpcs3_game_from_logs() -> Option<String> {
                     if line.contains("Boot successful") || line.contains("Game:") {
                         if let Some(game_info) = line.split("Game:").nth(1) {
                             return Some(game_info.trim().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
+}
+
+/// Try to get the current game name from Citra
+pub fn get_citra_game_name(pid: u32) -> Option<String> {
+    info!("Attempting to detect Citra game for PID {}", pid);
+    
+    // Method 1: Try to get from window title
+    if let Some(game_name) = get_citra_game_from_window_title(pid) {
+        info!("Got Citra game from window title: {}", game_name);
+        return Some(game_name);
+    }
+    
+    // Method 2: Check Citra config for recently played game
+    if let Some(game_info) = get_citra_game_from_config() {
+        info!("Got Citra game from config: {}", game_info);
+        return Some(game_info);
+    }
+    
+    None
+}
+
+fn get_citra_game_from_window_title(_pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            let display = x11::xlib::XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return None;
+            }
+            
+            let root = x11::xlib::XDefaultRootWindow(display);
+            let mut root_return = 0;
+            let mut parent_return = 0;
+            let mut children: *mut x11::xlib::Window = std::ptr::null_mut();
+            let mut n_children = 0;
+            
+            if x11::xlib::XQueryTree(
+                display,
+                root,
+                &mut root_return,
+                &mut parent_return,
+                &mut children,
+                &mut n_children
+            ) == 0 {
+                x11::xlib::XCloseDisplay(display);
+                return None;
+            }
+            
+            let windows = std::slice::from_raw_parts(children, n_children as usize);
+            let net_wm_name = x11::xlib::XInternAtom(
+                display,
+                b"_NET_WM_NAME\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            let utf8_string = x11::xlib::XInternAtom(
+                display,
+                b"UTF8_STRING\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            
+            for &window in windows {
+                // Get window class to check if it's Citra
+                let mut class_hint = x11::xlib::XClassHint {
+                    res_name: std::ptr::null_mut(),
+                    res_class: std::ptr::null_mut(),
+                };
+                
+                if x11::xlib::XGetClassHint(display, window, &mut class_hint) != 0 {
+                    let is_citra = if !class_hint.res_name.is_null() {
+                        let class_name = std::ffi::CStr::from_ptr(class_hint.res_name)
+                            .to_string_lossy()
+                            .to_lowercase();
+                        x11::xlib::XFree(class_hint.res_name as *mut _);
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        class_name.contains("citra")
+                    } else {
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        false
+                    };
+                    
+                    if is_citra {
+                        // Get window title
+                        let mut title_type = 0;
+                        let mut title_format = 0;
+                        let mut title_items = 0;
+                        let mut title_bytes = 0;
+                        let mut title_prop: *mut u8 = std::ptr::null_mut();
+                        
+                        if x11::xlib::XGetWindowProperty(
+                            display,
+                            window,
+                            net_wm_name,
+                            0,
+                            1024,
+                            x11::xlib::False,
+                            utf8_string,
+                            &mut title_type,
+                            &mut title_format,
+                            &mut title_items,
+                            &mut title_bytes,
+                            &mut title_prop
+                        ) == 0 && !title_prop.is_null() {
+                            let title = std::ffi::CStr::from_ptr(title_prop as *const i8)
+                                .to_string_lossy()
+                                .to_string();
+                            x11::xlib::XFree(title_prop as *mut _);
+                            
+                            // Citra window title format: "Citra | Game Title"
+                            if let Some(game_part) = title.split(" | ").nth(1) {
+                                if !game_part.is_empty() {
+                                    x11::xlib::XFree(children as *mut _);
+                                    x11::xlib::XCloseDisplay(display);
+                                    return Some(game_part.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            x11::xlib::XFree(children as *mut _);
+            x11::xlib::XCloseDisplay(display);
+        }
+    }
+    
+    None
+}
+
+fn get_citra_game_from_config() -> Option<String> {
+    // Try to read recently played game from Citra's config
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let config_paths = [
+                format!("{}/.var/app/org.citra_emu.citra/config/citra-emu/qt-config.ini", home),
+                format!("{}/.config/citra-emu/qt-config.ini", home),
+                format!("{}/.citra-emu/qt-config.ini", home),
+            ];
+            
+            for config_path in &config_paths {
+                if let Ok(content) = fs::read_to_string(config_path) {
+                    // Look for recent files in the config
+                    for line in content.lines() {
+                        if line.starts_with("recent_files\\") && line.contains(".3ds") {
+                            // Extract game name from path
+                            if let Some(path_part) = line.split('=').nth(1) {
+                                if let Some(filename) = Path::new(path_part).file_stem() {
+                                    return Some(filename.to_string_lossy().to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let config_path = format!("{}\\Citra\\config\\qt-config.ini", appdata);
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                for line in content.lines() {
+                    if line.starts_with("recent_files\\") && line.contains(".3ds") {
+                        if let Some(path_part) = line.split('=').nth(1) {
+                            if let Some(filename) = Path::new(path_part).file_stem() {
+                                return Some(filename.to_string_lossy().to_string());
+                            }
                         }
                     }
                 }

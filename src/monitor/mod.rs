@@ -200,6 +200,7 @@ pub async fn start_monitoring_with_sync(
                 process::EmulatorProcess::PCSX2 { .. } => "PCSX2",
                 process::EmulatorProcess::Dolphin { .. } => "Dolphin",
                 process::EmulatorProcess::RPCS3 { .. } => "RPCS3",
+                process::EmulatorProcess::Citra { .. } => "Citra",
             };
             
             // Check if this is a newly detected emulator
@@ -270,6 +271,28 @@ pub async fn start_monitoring_with_sync(
                                 }
                             } else {
                                 warn!("Could not find RPCS3 save directory");
+                            }
+                        }
+                    }
+                    "Citra" => {
+                        if let process::EmulatorProcess::Citra { .. } = &emulator {
+                            let citra = crate::emulators::citra::Citra::new();
+                            if let Some(save_dir) = citra.get_save_directory() {
+                                let save_dir = PathBuf::from(save_dir);
+                                match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                                    Ok((mut watcher, receiver)) => {
+                                        if let Err(e) = watcher.start().await {
+                                            warn!("Failed to start save watcher: {}", e);
+                                        } else {
+                                            info!("Started save watcher for Citra");
+                                            save_watcher = Some(watcher);
+                                            save_receiver = Some(receiver);
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to create save watcher: {}", e),
+                                }
+                            } else {
+                                warn!("Could not find Citra save directory");
                             }
                         }
                     }
@@ -351,6 +374,30 @@ pub async fn start_monitoring_with_sync(
                         }
                         
                         let _ = sender.send(MonitorEvent::GameDetected("Unknown PS3 Game".to_string())).await;
+                    }
+                }
+                process::EmulatorProcess::Citra { pid, exe_path } => {
+                    debug!("Citra running - PID: {}, Path: {}", pid, exe_path);
+                    
+                    // Try to get the actual game name
+                    if let Some(game_name) = process::get_citra_game_name(*pid) {
+                        current_game_name = Some(game_name.clone());
+                        
+                        // Update SaveWatcher with the current game name
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(Some(game_name.clone())).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
+                    } else {
+                        current_game_name = Some("Unknown 3DS Game".to_string());
+                        
+                        // Clear game name in SaveWatcher
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(None).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected("Unknown 3DS Game".to_string())).await;
                     }
                 }
             }
