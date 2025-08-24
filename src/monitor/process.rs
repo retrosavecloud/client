@@ -10,8 +10,11 @@ pub enum EmulatorProcess {
         pid: u32,
         exe_path: String,
     },
+    Dolphin {
+        pid: u32,
+        exe_path: String,
+    },
     // Future emulators
-    // Dolphin { pid: u32, exe_path: String },
     // RPCS3 { pid: u32, exe_path: String },
 }
 
@@ -32,6 +35,21 @@ pub fn detect_running_emulators() -> Option<EmulatorProcess> {
                 .unwrap_or_else(|| "unknown".to_string());
             
             return Some(EmulatorProcess::PCSX2 {
+                pid: pid.as_u32(),
+                exe_path,
+            });
+        }
+        
+        // Check for Dolphin
+        if process_name.contains("dolphin") {
+            debug!("Found Dolphin process: {:?} (PID: {})", process.name(), pid);
+            
+            let exe_path = process
+                .exe()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            
+            return Some(EmulatorProcess::Dolphin {
                 pid: pid.as_u32(),
                 exe_path,
             });
@@ -452,4 +470,207 @@ fn get_friendly_game_name(game_id: &str) -> Option<String> {
         // Add more mappings as needed
         _ => None
     }
+}
+
+/// Try to get the current game name from Dolphin
+pub fn get_dolphin_game_name(pid: u32) -> Option<String> {
+    info!("Attempting to detect Dolphin game for PID {}", pid);
+    
+    // Method 1: Try to get from window title
+    if let Some(game_name) = get_dolphin_game_from_window_title(pid) {
+        info!("Got Dolphin game from window title: {}", game_name);
+        return Some(game_name);
+    }
+    
+    // Method 2: Check process command line arguments
+    if let Some(game_info) = get_dolphin_game_from_process_cmd(pid) {
+        info!("Got Dolphin game from command line: {}", game_info);
+        return Some(game_info);
+    }
+    
+    // Method 3: Check recent game from config
+    if let Some(game_info) = get_dolphin_game_from_config() {
+        info!("Got Dolphin game from config: {}", game_info);
+        return Some(game_info);
+    }
+    
+    None
+}
+
+fn get_dolphin_game_from_window_title(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            // Similar to PCSX2 but looking for Dolphin windows
+            let display = x11::xlib::XOpenDisplay(std::ptr::null());
+            if display.is_null() {
+                return None;
+            }
+            
+            let root = x11::xlib::XDefaultRootWindow(display);
+            let mut root_return = 0;
+            let mut parent_return = 0;
+            let mut children: *mut x11::xlib::Window = std::ptr::null_mut();
+            let mut n_children = 0;
+            
+            if x11::xlib::XQueryTree(
+                display,
+                root,
+                &mut root_return,
+                &mut parent_return,
+                &mut children,
+                &mut n_children
+            ) == 0 {
+                x11::xlib::XCloseDisplay(display);
+                return None;
+            }
+            
+            let windows = std::slice::from_raw_parts(children, n_children as usize);
+            let net_wm_name = x11::xlib::XInternAtom(
+                display,
+                b"_NET_WM_NAME\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            let utf8_string = x11::xlib::XInternAtom(
+                display,
+                b"UTF8_STRING\0".as_ptr() as *const i8,
+                x11::xlib::False
+            );
+            
+            for &window in windows {
+                // Get window class to check if it's Dolphin
+                let mut class_hint = x11::xlib::XClassHint {
+                    res_name: std::ptr::null_mut(),
+                    res_class: std::ptr::null_mut(),
+                };
+                
+                if x11::xlib::XGetClassHint(display, window, &mut class_hint) != 0 {
+                    let is_dolphin = if !class_hint.res_name.is_null() {
+                        let class_name = std::ffi::CStr::from_ptr(class_hint.res_name)
+                            .to_string_lossy()
+                            .to_lowercase();
+                        x11::xlib::XFree(class_hint.res_name as *mut _);
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        class_name.contains("dolphin")
+                    } else {
+                        if !class_hint.res_class.is_null() {
+                            x11::xlib::XFree(class_hint.res_class as *mut _);
+                        }
+                        false
+                    };
+                    
+                    if is_dolphin {
+                        // Get window title
+                        let mut title_type = 0;
+                        let mut title_format = 0;
+                        let mut title_items = 0;
+                        let mut title_bytes = 0;
+                        let mut title_prop: *mut u8 = std::ptr::null_mut();
+                        
+                        if x11::xlib::XGetWindowProperty(
+                            display,
+                            window,
+                            net_wm_name,
+                            0,
+                            1024,
+                            x11::xlib::False,
+                            utf8_string,
+                            &mut title_type,
+                            &mut title_format,
+                            &mut title_items,
+                            &mut title_bytes,
+                            &mut title_prop
+                        ) == 0 && !title_prop.is_null() {
+                            let title = std::ffi::CStr::from_ptr(title_prop as *const i8)
+                                .to_string_lossy()
+                                .to_string();
+                            x11::xlib::XFree(title_prop as *mut _);
+                            
+                            // Dolphin window title format: "Game Title | Dolphin"
+                            if let Some(game_part) = title.split(" | ").next() {
+                                if !game_part.is_empty() && game_part != "Dolphin" {
+                                    x11::xlib::XFree(children as *mut _);
+                                    x11::xlib::XCloseDisplay(display);
+                                    return Some(game_part.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            x11::xlib::XFree(children as *mut _);
+            x11::xlib::XCloseDisplay(display);
+        }
+    }
+    
+    None
+}
+
+fn get_dolphin_game_from_process_cmd(pid: u32) -> Option<String> {
+    // Check if Dolphin was launched with a game file
+    let proc_cmdline = format!("/proc/{}/cmdline", pid);
+    if let Ok(cmdline) = fs::read_to_string(&proc_cmdline) {
+        let args: Vec<&str> = cmdline.split('\0').collect();
+        for arg in args {
+            // Check for common game file extensions
+            if arg.ends_with(".iso") || arg.ends_with(".gcm") || arg.ends_with(".wbfs") || 
+               arg.ends_with(".ciso") || arg.ends_with(".gcz") || arg.ends_with(".rvz") {
+                if let Some(filename) = Path::new(arg).file_stem() {
+                    return Some(filename.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_dolphin_game_from_config() -> Option<String> {
+    // Try to read the last played game from Dolphin's config
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            // Check various Dolphin config locations
+            let config_paths = [
+                format!("{}/.var/app/org.DolphinEmu.dolphin-emu/config/dolphin-emu/Dolphin.ini", home),
+                format!("{}/.config/dolphin-emu/Dolphin.ini", home),
+                format!("{}/.dolphin-emu/Config/Dolphin.ini", home),
+            ];
+            
+            for config_path in &config_paths {
+                if let Ok(content) = fs::read_to_string(config_path) {
+                    // Look for LastFilename in the config
+                    for line in content.lines() {
+                        if line.starts_with("LastFilename = ") {
+                            let path = line.trim_start_matches("LastFilename = ");
+                            if let Some(filename) = Path::new(path).file_stem() {
+                                return Some(filename.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            let config_path = format!("{}\\Documents\\Dolphin Emulator\\Config\\Dolphin.ini", home);
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                for line in content.lines() {
+                    if line.starts_with("LastFilename = ") {
+                        let path = line.trim_start_matches("LastFilename = ");
+                        if let Some(filename) = Path::new(path).file_stem() {
+                            return Some(filename.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
 }

@@ -11,6 +11,7 @@ use tracing::{info, debug, warn, error};
 
 use crate::storage::{Database, SaveWatcher, SaveEvent, SaveBackupManager};
 use crate::sync::SyncEvent;
+use crate::emulators::Emulator;
 
 #[derive(Debug, Clone)]
 pub enum MonitorEvent {
@@ -197,6 +198,7 @@ pub async fn start_monitoring_with_sync(
         if let Some(emulator) = process::detect_running_emulators() {
             let emulator_name = match &emulator {
                 process::EmulatorProcess::PCSX2 { .. } => "PCSX2",
+                process::EmulatorProcess::Dolphin { .. } => "Dolphin",
             };
             
             // Check if this is a newly detected emulator
@@ -205,8 +207,9 @@ pub async fn start_monitoring_with_sync(
                 info!("{} started", emulator_name);
                 let _ = sender.send(MonitorEvent::EmulatorStarted(emulator_name.to_string())).await;
                 
-                // Start save watching for PCSX2
-                if emulator_name == "PCSX2" {
+                // Start save watching for the emulator
+                match emulator_name {
+                    "PCSX2" => {
                     if let Some(save_dir) = process::get_pcsx2_save_directory() {
                         let save_dir = PathBuf::from(save_dir);
                         match SaveWatcher::new(save_dir.clone(), database.clone()) {
@@ -224,6 +227,30 @@ pub async fn start_monitoring_with_sync(
                     } else {
                         warn!("Could not find PCSX2 save directory");
                     }
+                    }
+                    "Dolphin" => {
+                        if let process::EmulatorProcess::Dolphin { .. } = &emulator {
+                            let dolphin = crate::emulators::dolphin::Dolphin::new();
+                            if let Some(save_dir) = dolphin.get_save_directory() {
+                                let save_dir = PathBuf::from(save_dir);
+                                match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                                    Ok((mut watcher, receiver)) => {
+                                        if let Err(e) = watcher.start().await {
+                                            warn!("Failed to start save watcher: {}", e);
+                                        } else {
+                                            info!("Started save watcher for Dolphin");
+                                            save_watcher = Some(watcher);
+                                            save_receiver = Some(receiver);
+                                        }
+                                    }
+                                    Err(e) => warn!("Failed to create save watcher: {}", e),
+                                }
+                            } else {
+                                warn!("Could not find Dolphin save directory");
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 
                 // Try to detect the game after a short delay
@@ -253,6 +280,30 @@ pub async fn start_monitoring_with_sync(
                         }
                         
                         let _ = sender.send(MonitorEvent::GameDetected("Unknown Game".to_string())).await;
+                    }
+                }
+                process::EmulatorProcess::Dolphin { pid, exe_path } => {
+                    debug!("Dolphin running - PID: {}, Path: {}", pid, exe_path);
+                    
+                    // Try to get the actual game name
+                    if let Some(game_name) = process::get_dolphin_game_name(*pid) {
+                        current_game_name = Some(game_name.clone());
+                        
+                        // Update SaveWatcher with the current game name
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(Some(game_name.clone())).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
+                    } else {
+                        current_game_name = Some("Unknown GameCube/Wii Game".to_string());
+                        
+                        // Clear game name in SaveWatcher
+                        if let Some(ref watcher) = save_watcher {
+                            watcher.set_current_game(None).await;
+                        }
+                        
+                        let _ = sender.send(MonitorEvent::GameDetected("Unknown GameCube/Wii Game".to_string())).await;
                     }
                 }
             }
