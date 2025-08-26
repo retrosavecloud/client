@@ -1,10 +1,11 @@
-use anyhow::{Result, Context};
-use reqwest::Client;
+use anyhow::{Result, Context, anyhow};
+use reqwest::{Client, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
-use tracing::debug;
+use tracing::{debug, warn};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
@@ -58,10 +59,18 @@ pub struct ListSavesResponse {
     pub per_page: i64,
 }
 
+/// Events that can occur during API operations
+#[derive(Debug, Clone)]
+pub enum ApiEvent {
+    /// Authentication failed (401 Unauthorized)
+    AuthenticationFailed,
+}
+
 pub struct SyncApi {
     client: Client,
     pub base_url: String,
     auth_manager: Arc<super::AuthManager>,
+    event_sender: Option<mpsc::UnboundedSender<ApiEvent>>,
 }
 
 impl SyncApi {
@@ -70,7 +79,41 @@ impl SyncApi {
             client: Client::new(),
             base_url,
             auth_manager,
+            event_sender: None,
         }
+    }
+    
+    /// Set the event sender for API events
+    pub fn set_event_sender(&mut self, sender: mpsc::UnboundedSender<ApiEvent>) {
+        self.event_sender = Some(sender);
+    }
+    
+    /// Check response status and handle 401 errors
+    async fn check_response(&self, response: Response) -> Result<Response> {
+        if response.status() == StatusCode::UNAUTHORIZED {
+            warn!("Received 401 Unauthorized from API");
+            
+            // Send auth failed event if we have a sender
+            if let Some(sender) = &self.event_sender {
+                let _ = sender.send(ApiEvent::AuthenticationFailed);
+            }
+            
+            // Try to reinitialize auth (which will attempt refresh internally)
+            if self.auth_manager.init().await.is_ok() {
+                let state = self.auth_manager.get_state().await;
+                if state.is_authenticated {
+                    debug!("Successfully refreshed token after 401");
+                    // Return error so caller can retry with new token
+                    return Err(anyhow!("Authentication refreshed - please retry"));
+                }
+            }
+            
+            // If refresh failed, clear tokens
+            self.auth_manager.logout().await.ok();
+            return Err(anyhow!("Authentication failed - please sign in again"));
+        }
+        
+        Ok(response)
     }
 
     /// Register a new game or get existing one
@@ -88,10 +131,12 @@ impl SyncApi {
             .send()
             .await
             .context("Failed to register game")?;
+        
+        let response = self.check_response(response).await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("Failed to register game: {}", error_text));
+            return Err(anyhow!("Failed to register game: {}", error_text));
         }
 
         response.json().await
@@ -109,9 +154,11 @@ impl SyncApi {
             .send()
             .await
             .context("Failed to list games")?;
+        
+        let response = self.check_response(response).await?;
 
         if !response.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to list games"));
+            return Err(anyhow!("Failed to list games"));
         }
 
         response.json().await

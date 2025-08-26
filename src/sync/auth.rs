@@ -259,6 +259,40 @@ impl AuthManager {
         let state = self.state.read().await;
         state.tokens.as_ref().map(|t| t.access_token.clone())
     }
+    
+    /// Save tokens from OAuth flow
+    pub async fn save_tokens(
+        &self,
+        access_token: String,
+        refresh_token: String,
+        user: crate::auth::UserInfo,
+    ) -> Result<()> {
+        // Convert user info to our internal format
+        let user_info = UserInfo {
+            id: user.id,
+            email: user.email.clone(),
+            username: user.username,
+        };
+        
+        // Create tokens struct
+        let tokens = AuthTokens {
+            access_token,
+            refresh_token,
+            expires_in: 86400, // Default to 24 hours
+        };
+        
+        // Store tokens securely
+        self.store_tokens(&tokens)?;
+        
+        // Update state
+        let mut state = self.state.write().await;
+        state.is_authenticated = true;
+        state.user = Some(user_info.clone());
+        state.tokens = Some(tokens);
+        
+        info!("Successfully saved OAuth tokens for user: {}", user_info.email);
+        Ok(())
+    }
 
     /// Refresh the access token
     async fn refresh_token(&self, refresh_token: &str) -> Result<AuthTokens> {

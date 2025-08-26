@@ -28,6 +28,7 @@ zstd = "0.13"
 
 # Cryptography
 sha2 = "0.10"
+hex = "0.4"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 aes-gcm = "0.10"
 argon2 = "0.5"
@@ -61,9 +62,10 @@ global-hotkey = "0.6"
 rodio = "0.19"
 
 # Networking
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "cookies"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
+webbrowser = "1.0"
 
 # Configuration
 toml = "0.8"
@@ -75,6 +77,8 @@ dirs = "5.0"
 base64 = "0.22"
 rand = "0.8"
 gethostname = "0.5"
+open = "5.3.2"
+url = "2.5.7"
 
 [dev-dependencies]
 tempfile = "3.8"

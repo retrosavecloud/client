@@ -19,9 +19,16 @@ See [Releases](https://github.com/retrosave/retrosave-client/releases) for pre-b
 ### Build from Source
 
 ```bash
+# Copy environment configuration
+cp .env.example .env
+# Edit .env with your API URL (default: http://localhost:8080)
+
+# Build and run
 cargo build --release
 ./target/release/retrosave
 ```
+
+⚠️ **Security Notice**: Never commit `.env` files to version control. They contain sensitive configuration that should remain private.
 
 ## Contributing
 

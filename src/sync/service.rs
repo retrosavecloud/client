@@ -22,6 +22,7 @@ pub enum SyncEvent {
     },
     SyncRequested,
     AuthChanged(bool),
+    AuthFailed(String), // Authentication failed with reason
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +223,13 @@ impl SyncService {
                         // Disconnect WebSocket on logout
                         self.disconnect_websocket().await;
                     }
+                }
+                
+                SyncEvent::AuthFailed(reason) => {
+                    warn!("Authentication failed: {}", reason);
+                    // Auth manager already handles logout/cleanup
+                    // Just disconnect WebSocket
+                    self.disconnect_websocket().await;
                 }
             }
         }

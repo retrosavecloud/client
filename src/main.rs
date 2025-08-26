@@ -3,17 +3,10 @@ use tracing::{info, error, debug};
 use tracing_subscriber;
 use tokio::sync::mpsc;
 
-mod monitor;
-mod emulators;
-mod ui;
-mod storage;
-mod hotkey;
-mod sync;
-
-use ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager, AudioFeedback};
-use storage::{Database, SettingsManager};
-use hotkey::{HotkeyManager, HotkeyEvent};
-use sync::{AuthManager, SyncService, SyncEvent};
+use retrosave::ui::{SystemTray, tray::TrayMessage, SettingsWindow, NotificationManager, AudioFeedback};
+use retrosave::storage::{Database, SettingsManager};
+use retrosave::hotkey::{HotkeyManager, HotkeyEvent};
+use retrosave::sync::{AuthManager, SyncService, SyncEvent};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -80,8 +73,8 @@ async fn main() -> Result<()> {
     let audio_feedback = Arc::new(AudioFeedback::default());
 
     // Create channels for monitor communication
-    let (monitor_sender, mut monitor_receiver) = mpsc::channel::<monitor::MonitorEvent>(100);
-    let (cmd_sender, cmd_receiver) = mpsc::channel::<monitor::MonitorCommand>(10);
+    let (monitor_sender, mut monitor_receiver) = mpsc::channel::<retrosave::monitor::MonitorEvent>(100);
+    let (cmd_sender, cmd_receiver) = mpsc::channel::<retrosave::monitor::MonitorCommand>(10);
     
     // Create hotkey manager
     let (hotkey_sender, mut hotkey_receiver) = mpsc::channel::<HotkeyEvent>(100);
@@ -123,7 +116,7 @@ async fn main() -> Result<()> {
         None
     };
     let monitor_handle = tokio::spawn(async move {
-        if let Err(e) = monitor::start_monitoring_with_sync(
+        if let Err(e) = retrosave::monitor::start_monitoring_with_sync(
             monitor_sender, 
             db_clone, 
             cmd_receiver,
@@ -149,13 +142,13 @@ async fn main() -> Result<()> {
                         HotkeyEvent::SaveNow => {
                             info!("Hotkey triggered: Save Now");
                             // Don't show notification here, wait for the result
-                            let _ = cmd_sender_hotkey.send(monitor::MonitorCommand::TriggerManualSave).await;
+                            let _ = cmd_sender_hotkey.send(retrosave::monitor::MonitorCommand::TriggerManualSave).await;
                         }
                     }
                 }
                 Some(event) = monitor_receiver.recv() => {
                     match event {
-                        monitor::MonitorEvent::EmulatorStarted(name) => {
+                        retrosave::monitor::MonitorEvent::EmulatorStarted(name) => {
                             let msg = format!("{} detected", name);
                             tray.update_status(&msg);
                             
@@ -167,7 +160,7 @@ async fn main() -> Result<()> {
                             tray.show_notification("Emulator Detected", &msg);
                             let _ = tray.send_message(TrayMessage::EmulatorDetected(name)).await;
                         }
-                        monitor::MonitorEvent::EmulatorStopped(name) => {
+                        retrosave::monitor::MonitorEvent::EmulatorStopped(name) => {
                             tray.update_status("Monitoring");
                             
                             // Show desktop notification if enabled
@@ -178,7 +171,7 @@ async fn main() -> Result<()> {
                             tray.show_notification("Emulator Stopped", &format!("{} has stopped", name));
                             let _ = tray.send_message(TrayMessage::EmulatorStopped).await;
                         }
-                        monitor::MonitorEvent::GameDetected(name) => {
+                        retrosave::monitor::MonitorEvent::GameDetected(name) => {
                             tray.update_status(&format!("Playing: {}", name));
                             
                             // Show desktop notification if enabled
@@ -188,7 +181,7 @@ async fn main() -> Result<()> {
                             
                             let _ = tray.send_message(TrayMessage::GameDetected(name)).await;
                         }
-                        monitor::MonitorEvent::SaveDetected { game_name, emulator, file_path } => {
+                        retrosave::monitor::MonitorEvent::SaveDetected { game_name, emulator, file_path } => {
                             // Show desktop notification if enabled
                             if settings_window_clone.get_settings().show_notifications {
                                 notif_manager_clone.notify_save_detected(&game_name);
@@ -217,13 +210,13 @@ async fn main() -> Result<()> {
                                 }
                             }
                         }
-                        monitor::MonitorEvent::ManualSaveResult(result) => {
+                        retrosave::monitor::MonitorEvent::ManualSaveResult(result) => {
                             // Play audio feedback
                             audio_feedback_clone.play_save_result(&result);
                             
                             // Show colored terminal output
                             match &result {
-                                monitor::SaveResult::Success { game_name, file_count } => {
+                                retrosave::monitor::SaveResult::Success { game_name, file_count } => {
                                     // Green success message
                                     println!("\n\x1b[32m✓ Save Successful!\x1b[0m");
                                     println!("  Game: {}", game_name);
@@ -234,7 +227,7 @@ async fn main() -> Result<()> {
                                         &format!("{} - {} file(s) saved", game_name, file_count)
                                     );
                                 }
-                                monitor::SaveResult::NoChanges => {
+                                retrosave::monitor::SaveResult::NoChanges => {
                                     // Yellow info message
                                     println!("\n\x1b[33mℹ No changes to save\x1b[0m");
                                     
@@ -243,7 +236,7 @@ async fn main() -> Result<()> {
                                         "No save file changes detected"
                                     );
                                 }
-                                monitor::SaveResult::Failed(error) => {
+                                retrosave::monitor::SaveResult::Failed(error) => {
                                     // Red error message
                                     println!("\n\x1b[31m✗ Save Failed!\x1b[0m");
                                     println!("  Error: {}", error);
@@ -261,7 +254,7 @@ async fn main() -> Result<()> {
                     debug!("Tray message received: {:?}", tray_msg);
                     // Handle tray-specific messages
                     match tray_msg {
-                        ui::tray::TrayMessage::ManualSaveRequested => {
+                        TrayMessage::ManualSaveRequested => {
                             info!("Manual save requested by user");
                             
                             // Show desktop notification if enabled
@@ -269,9 +262,9 @@ async fn main() -> Result<()> {
                                 notif_manager_clone.notify_manual_save();
                             }
                             
-                            let _ = cmd_sender_clone.send(monitor::MonitorCommand::TriggerManualSave).await;
+                            let _ = cmd_sender_clone.send(retrosave::monitor::MonitorCommand::TriggerManualSave).await;
                         }
-                        ui::tray::TrayMessage::OpenSettings => {
+                        TrayMessage::OpenSettings => {
                             info!("Opening settings window");
                             let settings_clone = settings_window_clone.clone();
                             // Show the settings window
@@ -281,18 +274,18 @@ async fn main() -> Result<()> {
                                 }
                             });
                         }
-                        ui::tray::TrayMessage::HotkeyChanged(new_hotkey) => {
+                        TrayMessage::HotkeyChanged(new_hotkey) => {
                             info!("Hotkey changed to: {:?}", new_hotkey);
                             // Update the hotkey manager
                             if let Err(e) = hotkey_manager_clone.set_save_hotkey(new_hotkey) {
                                 error!("Failed to update hotkey: {}", e);
                             }
                         }
-                        ui::tray::TrayMessage::SyncStarted => {
+                        TrayMessage::SyncStarted => {
                             info!("Cloud sync started");
                             tray.update_status("Syncing...");
                         }
-                        ui::tray::TrayMessage::SyncCompleted { uploaded, downloaded } => {
+                        TrayMessage::SyncCompleted { uploaded, downloaded } => {
                             info!("Cloud sync completed: {} uploaded, {} downloaded", uploaded, downloaded);
                             tray.update_status("Monitoring (synced)");
                             if uploaded > 0 || downloaded > 0 {
@@ -302,11 +295,11 @@ async fn main() -> Result<()> {
                                 );
                             }
                         }
-                        ui::tray::TrayMessage::SyncFailed(error) => {
+                        TrayMessage::SyncFailed(error) => {
                             error!("Cloud sync failed: {}", error);
                             tray.show_notification("Sync Failed", &error);
                         }
-                        ui::tray::TrayMessage::CloudAuthChanged { is_authenticated, email } => {
+                        TrayMessage::CloudAuthChanged { is_authenticated, email } => {
                             if is_authenticated {
                                 let msg = format!("Logged in as {}", email.as_deref().unwrap_or("unknown"));
                                 info!("{}", msg);

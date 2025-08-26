@@ -25,6 +25,18 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
+        // Get API URL from environment or use default based on build mode
+        let cloud_api_url = std::env::var("RETROSAVE_API_URL")
+            .unwrap_or_else(|_| {
+                // In debug mode, use localhost
+                #[cfg(debug_assertions)]
+                return "http://localhost:8080".to_string();
+                
+                // In release mode, use production API
+                #[cfg(not(debug_assertions))]
+                return "https://api.retrosave.cloud".to_string();
+            });
+
         Self {
             auto_save_enabled: true,
             save_interval_minutes: 5,
@@ -33,7 +45,7 @@ impl Default for Settings {
             minimize_to_tray: true,
             show_notifications: true,
             cloud_sync_enabled: false,
-            cloud_api_url: "http://localhost:3000".to_string(),
+            cloud_api_url,
             cloud_auto_sync: true,
             hotkey_enabled: true,
             save_hotkey: Some("Ctrl+Shift+S".to_string()),
@@ -237,12 +249,7 @@ impl SettingsWindow {
                         // Auth state
                         is_authenticated,
                         user_email,
-                        // Auth form state
-                        auth_mode: AuthMode::Login,
-                        auth_email: String::new(),
-                        auth_username: String::new(),
-                        auth_password: String::new(),
-                        auth_confirm_password: String::new(),
+                        // Auth state
                         auth_is_loading: false,
                         auth_error: None,
                         auth_result_rx: None,
@@ -365,22 +372,10 @@ struct SettingsApp {
     // Auth state
     is_authenticated: bool,
     user_email: Option<String>,
-    // Auth form state
-    auth_mode: AuthMode,
-    auth_email: String,
-    auth_username: String,
-    auth_password: String,
-    auth_confirm_password: String,
     auth_is_loading: bool,
     auth_error: Option<String>,
     auth_result_rx: Option<std::sync::mpsc::Receiver<AuthResult>>,
     auth_check_rx: Option<std::sync::mpsc::Receiver<(bool, Option<String>)>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-enum AuthMode {
-    Login,
-    Register,
 }
 
 #[derive(Debug, Clone)]
@@ -458,9 +453,6 @@ impl eframe::App for SettingsApp {
                         self.is_authenticated = true;
                         self.user_email = Some(email);
                         self.auth_error = None;
-                        // Clear form
-                        self.auth_password.clear();
-                        self.auth_confirm_password.clear();
                     }
                     AuthResult::Error(err) => {
                         self.auth_error = Some(err);
@@ -471,41 +463,68 @@ impl eframe::App for SettingsApp {
             }
         }
         
-        // Periodically check auth state from auth manager
-        static mut LAST_AUTH_CHECK: Option<std::time::Instant> = None;
-        let should_check = unsafe {
-            match LAST_AUTH_CHECK {
-                None => {
-                    LAST_AUTH_CHECK = Some(std::time::Instant::now());
-                    true
+        // If auth is loading, periodically check auth status (but not too often)
+        // This handles edge cases where browser auth succeeds but callback fails
+        if self.auth_is_loading && self.auth_result_rx.is_some() {
+            static mut LAST_AUTH_LOADING_CHECK: Option<std::time::Instant> = None;
+            let should_check_auth_status = unsafe {
+                match LAST_AUTH_LOADING_CHECK {
+                    None => {
+                        LAST_AUTH_LOADING_CHECK = Some(std::time::Instant::now());
+                        false // Don't check immediately, wait for OAuth callback first
+                    }
+                    Some(last) => {
+                        // Only check every 5 seconds to reduce server load
+                        if last.elapsed() > std::time::Duration::from_secs(5) {
+                            LAST_AUTH_LOADING_CHECK = Some(std::time::Instant::now());
+                            true
+                        } else {
+                            false
+                        }
+                    }
                 }
-                Some(last) => {
-                    if last.elapsed() > std::time::Duration::from_secs(5) {
-                        LAST_AUTH_CHECK = Some(std::time::Instant::now());
-                        true
-                    } else {
-                        false
+            };
+            
+            if should_check_auth_status {
+                if let Some(ref auth_manager) = self.auth_manager {
+                    let auth_manager_clone = auth_manager.clone();
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Runtime::new().unwrap();
+                        rt.block_on(async {
+                            let is_auth = auth_manager_clone.is_authenticated().await;
+                            if is_auth {
+                                let user = auth_manager_clone.get_user_info().await;
+                                let _ = tx.send((true, user.map(|u| u.email)));
+                            } else {
+                                let _ = tx.send((false, None));
+                            }
+                        });
+                    });
+                    
+                    // Check immediately without blocking
+                    if let Ok((is_auth, email)) = rx.recv_timeout(std::time::Duration::from_millis(100)) {
+                        if is_auth && email.is_some() {
+                            // Auth succeeded! Update state
+                            self.is_authenticated = true;
+                            self.user_email = email;
+                            self.auth_is_loading = false;
+                            self.auth_error = None;
+                            self.auth_result_rx = None;
+                            info!("Browser auth detected as successful via polling");
+                            ctx.request_repaint();
+                        }
                     }
                 }
             }
-        };
-        
-        if should_check && self.visible {
-            if let Some(ref auth_manager) = self.auth_manager {
-                let auth_manager_clone = auth_manager.clone();
-                std::thread::spawn(move || {
-                    let rt = tokio::runtime::Runtime::new().unwrap();
-                    rt.block_on(async {
-                        let is_auth = auth_manager_clone.is_authenticated().await;
-                        if is_auth {
-                            if let Some(user) = auth_manager_clone.get_user_info().await {
-                                debug!("Periodic auth check: authenticated as {}", user.email);
-                            }
-                        }
-                    });
-                });
-            }
         }
+        
+        // No need for periodic auth checks - we already check when:
+        // 1. Window is shown (line 423-443)
+        // 2. Auth flow completes (line 447-520)
+        // 3. User explicitly logs in/out
+        // This prevents unnecessary server load
         
         // Request repaint to keep checking for commands
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
@@ -515,10 +534,8 @@ impl eframe::App for SettingsApp {
             return;
         }
         
-        // Action flags to avoid borrow checker issues
+        // Action flag to avoid borrow checker issues
         let mut should_logout = false;
-        let mut should_perform_login = false;
-        let mut should_perform_register = false;
         
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Retrosave Settings");
@@ -632,52 +649,67 @@ impl eframe::App for SettingsApp {
                     cloud_sync_enabled = settings.cloud_sync_enabled;
                 }
             } else {
-                // Not authenticated - show login form directly
-                ui.label(egui::RichText::new("🔒 Sign in to enable cloud sync").color(egui::Color32::from_rgb(200, 200, 200)));
-                ui.add_space(10.0);
-                
-                // Show auth forms
-                        egui::Frame::none()
-                            .fill(egui::Color32::from_rgb(45, 45, 50))
-                            .rounding(egui::Rounding::same(5.0))
-                            .inner_margin(egui::Margin::same(12.0))
-                            .show(ui, |ui| {
-                                // Mode selector
-                                ui.horizontal(|ui| {
-                                    ui.label("Account:");
-                                    if ui.selectable_label(self.auth_mode == AuthMode::Login, "Sign In").clicked() {
-                                        self.auth_mode = AuthMode::Login;
-                                        self.auth_error = None;
-                                    }
-                                    ui.label("|");
-                                    if ui.selectable_label(self.auth_mode == AuthMode::Register, "Sign Up").clicked() {
-                                        self.auth_mode = AuthMode::Register;
-                                        self.auth_error = None;
-                                    }
-                                });
+                // Not authenticated - show browser auth UI
+                egui::Frame::none()
+                    .fill(egui::Color32::from_rgb(40, 45, 40))
+                    .rounding(egui::Rounding::same(8.0))
+                    .inner_margin(egui::Margin::same(16.0))
+                    .show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            // Icon and heading
+                            ui.label(egui::RichText::new("🔐").size(32.0));
+                            ui.add_space(8.0);
+                            ui.label(egui::RichText::new("Sign in to enable cloud sync").size(16.0).strong());
+                            ui.add_space(4.0);
+                            ui.label(egui::RichText::new("Securely sync your saves across all devices").size(12.0).color(egui::Color32::from_rgb(150, 150, 150)));
+                            
+                            ui.add_space(16.0);
+                            
+                            // Browser auth button
+                            ui.add_enabled_ui(!self.auth_is_loading, |ui| {
+                                let button_text = if self.auth_is_loading {
+                                    "⏳ Waiting for authentication..."
+                                } else {
+                                    "🌐 Sign in with Browser"
+                                };
                                 
-                                ui.add_space(8.0);
+                                let button = egui::Button::new(
+                                    egui::RichText::new(button_text).size(14.0)
+                                )
+                                .min_size(egui::Vec2::new(200.0, 36.0))
+                                .rounding(egui::Rounding::same(6.0));
                                 
-                                // Error message
-                                if let Some(ref error) = self.auth_error {
-                                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("⚠ {}", error));
-                                    ui.add_space(5.0);
-                                }
-                                
-                                // Show appropriate form
-                                match self.auth_mode {
-                                    AuthMode::Login => {
-                                        if self.show_login_form_ui(ui) {
-                                            should_perform_login = true;
-                                        }
-                                    },
-                                    AuthMode::Register => {
-                                        if self.show_register_form_ui(ui) {
-                                            should_perform_register = true;
-                                        }
-                                    },
+                                if ui.add(button).clicked() {
+                                    self.start_browser_auth();
                                 }
                             });
+                            
+                            // Show loading message if authenticating
+                            if self.auth_is_loading {
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("⚠ Complete authentication in your browser").size(12.0).color(egui::Color32::from_rgb(255, 200, 100)));
+                                ui.label(egui::RichText::new("This window will automatically update when done").size(11.0).color(egui::Color32::from_rgb(150, 150, 150)));
+                            }
+                            
+                            // Error message
+                            if let Some(ref error) = self.auth_error {
+                                ui.add_space(8.0);
+                                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("⚠ {}", error));
+                            }
+                            
+                            ui.add_space(12.0);
+                            ui.separator();
+                            ui.add_space(8.0);
+                            
+                            // Benefits list
+                            ui.vertical(|ui| {
+                                ui.label(egui::RichText::new("✅ Secure OAuth 2.0 authentication").size(11.0).color(egui::Color32::from_rgb(130, 130, 130)));
+                                ui.label(egui::RichText::new("✅ Two-factor authentication support").size(11.0).color(egui::Color32::from_rgb(130, 130, 130)));
+                                ui.label(egui::RichText::new("✅ Sign in with Google or GitHub").size(11.0).color(egui::Color32::from_rgb(130, 130, 130)));
+                            });
+                        });
+                    });
+                ui.add_space(10.0);
             }
             
             // Cloud sync settings if authenticated and enabled
@@ -783,202 +815,10 @@ impl eframe::App for SettingsApp {
         if should_logout {
             self.perform_logout(ctx);
         }
-        if should_perform_login {
-            self.perform_login(ctx);
-        }
-        if should_perform_register {
-            self.perform_register(ctx);
-        }
     }
 }
 
 impl SettingsApp {
-    fn show_login_form_ui(&mut self, ui: &mut egui::Ui) -> bool {
-        let mut should_login = false;
-        
-        // Email field
-        ui.label("Email:");
-        let email_response = ui.text_edit_singleline(&mut self.auth_email);
-        
-        ui.add_space(5.0);
-        
-        // Password field
-        ui.label("Password:");
-        let password_response = ui.add(
-            egui::TextEdit::singleline(&mut self.auth_password)
-                .password(true)
-        );
-        
-        ui.add_space(10.0);
-        
-        // Submit on Enter
-        if (email_response.lost_focus() || password_response.lost_focus()) 
-            && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            should_login = true;
-        }
-        
-        // Login button
-        ui.add_enabled_ui(!self.auth_is_loading, |ui| {
-            let button_text = if self.auth_is_loading { "Signing in..." } else { "🔐 Sign In" };
-            if ui.button(egui::RichText::new(button_text).size(14.0)).clicked() {
-                should_login = true;
-            }
-        });
-        
-        should_login
-    }
-    
-    fn show_register_form_ui(&mut self, ui: &mut egui::Ui) -> bool {
-        let mut should_register = false;
-        
-        // Username field
-        ui.label("Username:");
-        ui.text_edit_singleline(&mut self.auth_username);
-        
-        ui.add_space(5.0);
-        
-        // Email field
-        ui.label("Email:");
-        ui.text_edit_singleline(&mut self.auth_email);
-        
-        ui.add_space(5.0);
-        
-        // Password field
-        ui.label("Password:");
-        ui.add(
-            egui::TextEdit::singleline(&mut self.auth_password)
-                .password(true)
-        );
-        
-        ui.add_space(5.0);
-        
-        // Confirm password field
-        ui.label("Confirm Password:");
-        let confirm_response = ui.add(
-            egui::TextEdit::singleline(&mut self.auth_confirm_password)
-                .password(true)
-        );
-        
-        ui.add_space(10.0);
-        
-        // Submit on Enter
-        if confirm_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-            should_register = true;
-        }
-        
-        // Register button
-        ui.add_enabled_ui(!self.auth_is_loading, |ui| {
-            let button_text = if self.auth_is_loading { "Creating..." } else { "✨ Create Account" };
-            if ui.button(egui::RichText::new(button_text).size(14.0)).clicked() {
-                should_register = true;
-            }
-        });
-        
-        should_register
-    }
-    
-    fn perform_login(&mut self, ctx: &egui::Context) {
-        // Validate
-        if self.auth_email.is_empty() || self.auth_password.is_empty() {
-            self.auth_error = Some("Please fill in all fields".to_string());
-            return;
-        }
-        
-        self.auth_is_loading = true;
-        self.auth_error = None;
-        
-        // Create channel for result
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.auth_result_rx = Some(rx);
-        
-        if let Some(ref auth_manager) = self.auth_manager {
-            let auth_manager = auth_manager.clone();
-            let email = self.auth_email.clone();
-            let password = self.auth_password.clone();
-            
-            // Perform login in background
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    match auth_manager.login(&email, &password).await {
-                        Ok(_) => {
-                            let _ = tx.send(AuthResult::Success { email });
-                        }
-                        Err(e) => {
-                            let error_msg = if e.to_string().contains("401") {
-                                "Invalid email or password".to_string()
-                            } else if e.to_string().contains("Failed to send") {
-                                "Cannot connect to server".to_string()
-                            } else {
-                                format!("Login failed: {}", e)
-                            };
-                            let _ = tx.send(AuthResult::Error(error_msg));
-                        }
-                    }
-                });
-            });
-        }
-        
-        ctx.request_repaint();
-    }
-    
-    fn perform_register(&mut self, ctx: &egui::Context) {
-        // Validate
-        if self.auth_username.is_empty() || self.auth_email.is_empty() || 
-           self.auth_password.is_empty() || self.auth_confirm_password.is_empty() {
-            self.auth_error = Some("Please fill in all fields".to_string());
-            return;
-        }
-        
-        if self.auth_password != self.auth_confirm_password {
-            self.auth_error = Some("Passwords do not match".to_string());
-            return;
-        }
-        
-        if self.auth_password.len() < 8 {
-            self.auth_error = Some("Password must be at least 8 characters".to_string());
-            return;
-        }
-        
-        self.auth_is_loading = true;
-        self.auth_error = None;
-        
-        // Create channel for result
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.auth_result_rx = Some(rx);
-        
-        if let Some(ref auth_manager) = self.auth_manager {
-            let auth_manager = auth_manager.clone();
-            let username = self.auth_username.clone();
-            let email = self.auth_email.clone();
-            let password = self.auth_password.clone();
-            
-            // Perform registration in background
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    match auth_manager.register(&email, &username, &password).await {
-                        Ok(_) => {
-                            let _ = tx.send(AuthResult::Success { email });
-                        }
-                        Err(e) => {
-                            let error_msg = if e.to_string().contains("already exists") {
-                                "Email or username already exists".to_string()
-                            } else if e.to_string().contains("Failed to send") {
-                                "Cannot connect to server".to_string()
-                            } else {
-                                format!("Registration failed: {}", e)
-                            };
-                            let _ = tx.send(AuthResult::Error(error_msg));
-                        }
-                    }
-                });
-            });
-        }
-        
-        ctx.request_repaint();
-    }
-    
     fn perform_logout(&mut self, ctx: &egui::Context) {
         if let Some(ref auth_manager) = self.auth_manager {
             let auth_manager_clone = auth_manager.clone();
@@ -996,5 +836,72 @@ impl SettingsApp {
             self.user_email = None;
         }
         ctx.request_repaint();
+    }
+    
+    fn start_browser_auth(&mut self) {
+        use crate::auth::BrowserOAuth;
+        
+        // Set loading state
+        self.auth_is_loading = true;
+        self.auth_error = None;
+        
+        // Get API URL from settings
+        let api_url = {
+            let settings = self.settings.lock().unwrap();
+            settings.cloud_api_url.clone()
+        };
+        
+        info!("Starting browser OAuth flow with API URL: {}", api_url);
+        
+        // Create channel for result
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.auth_result_rx = Some(rx);
+        
+        // Get auth manager reference
+        let auth_manager = self.auth_manager.clone();
+        
+        // Start OAuth flow in background thread
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                let oauth_client = BrowserOAuth::new(api_url);
+                
+                match oauth_client.authenticate().await {
+                    Ok(token_response) => {
+                        info!("OAuth flow successful, got tokens for user: {}", token_response.user.email);
+                        
+                        // Save tokens if we have an auth manager
+                        if let Some(auth_mgr) = auth_manager {
+                            if let Err(e) = auth_mgr.save_tokens(
+                                token_response.access_token.clone(),
+                                token_response.refresh_token.clone(),
+                                token_response.user.clone()
+                            ).await {
+                                error!("Failed to save OAuth tokens: {}", e);
+                                let _ = tx.send(AuthResult::Error(
+                                    format!("Failed to save authentication: {}", e)
+                                ));
+                                return;
+                            }
+                        }
+                        
+                        let _ = tx.send(AuthResult::Success {
+                            email: token_response.user.email
+                        });
+                    }
+                    Err(e) => {
+                        error!("OAuth flow failed: {}", e);
+                        let error_msg = if e.to_string().contains("timeout") {
+                            "Authentication timed out. Please try again.".to_string()
+                        } else if e.to_string().contains("cancel") {
+                            "Authentication cancelled.".to_string()
+                        } else {
+                            format!("Authentication failed: {}", e)
+                        };
+                        let _ = tx.send(AuthResult::Error(error_msg));
+                    }
+                }
+            });
+        });
     }
 }
