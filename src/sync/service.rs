@@ -46,6 +46,7 @@ pub struct SyncService {
     conflict_strategy: ConflictResolutionStrategy,
     device_id: String,
     device_name: String,
+    notification_service: Option<Arc<crate::ui::notifications::NotificationManager>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -100,7 +101,14 @@ impl SyncService {
             conflict_strategy: ConflictResolutionStrategy::NewerWins,
             device_id,
             device_name,
+            notification_service: None,
         }
+    }
+    
+    /// Set the notification service
+    pub fn with_notification_service(mut self, service: Arc<crate::ui::notifications::NotificationManager>) -> Self {
+        self.notification_service = Some(service);
+        self
     }
 
     /// Start the sync service
@@ -328,7 +336,7 @@ impl SyncService {
             let hash = format!("{:x}", hasher.finalize());
             
             // Request upload URL with file path in metadata
-            let upload_response = self.api
+            let upload_response = match self.api
                 .request_upload_url_with_metadata(
                     cloud_game_id, 
                     &hash, 
@@ -340,7 +348,30 @@ impl SyncService {
                         "emulator": task.emulator.clone(),
                     }))
                 )
-                .await?;
+                .await {
+                    Ok(response) => response,
+                    Err(e) => {
+                        // Check if this is a limit exceeded error
+                        let error_str = e.to_string();
+                        if error_str.contains("402") || error_str.contains("limit") || error_str.contains("exceeded") {
+                            warn!("Cloud sync limit exceeded for {}: {}", task.game_name, e);
+                            
+                            // Show notification about limit
+                            if let Some(ref notif) = self.notification_service {
+                                notif.show_warning(
+                                    "Cloud Sync Limit Reached",
+                                    &format!("Save for {} was saved locally but couldn't sync to cloud. Upgrade your plan for more cloud storage.", task.game_name)
+                                );
+                            }
+                            
+                            // Keep the task in queue for later retry
+                            continue;
+                        }
+                        
+                        // For other errors, propagate them
+                        return Err(e);
+                    }
+                };
             
             // Upload data
             self.api

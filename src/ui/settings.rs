@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, info, error};
 use tokio::sync::mpsc;
 use crate::storage::SettingsManager;
-use crate::sync::AuthManager;
+use crate::sync::{AuthManager, api::SyncApi};
+use crate::payment::{SubscriptionStatus, UsageStats};
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -79,7 +80,7 @@ impl SettingsWindow {
         
         // Start the settings window in a dedicated thread
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_window(settings_clone, rx, None, None) {
+            if let Err(e) = Self::run_window(settings_clone, rx, None, None, None) {
                 error!("Settings window thread error: {}", e);
             }
         });
@@ -99,7 +100,7 @@ impl SettingsWindow {
         
         // Start the settings window in a dedicated thread
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone, None) {
+            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone, None, None) {
                 error!("Settings window thread error: {}", e);
             }
         });
@@ -117,14 +118,20 @@ impl SettingsWindow {
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<SettingsCommand>(10);
-        let settings = Arc::new(Mutex::new(initial_settings));
+        let settings = Arc::new(Mutex::new(initial_settings.clone()));
         let settings_clone = settings.clone();
         let settings_manager_clone = Some(settings_manager.clone());
         let auth_manager_clone = Some(auth_manager.clone());
         
+        // Create API client
+        let api_client = Some(Arc::new(SyncApi::new(
+            initial_settings.cloud_api_url.clone(),
+            auth_manager.clone(),
+        )));
+        
         // Start the settings window in a dedicated thread
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone, auth_manager_clone) {
+            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone, auth_manager_clone, api_client) {
                 error!("Settings window thread error: {}", e);
             }
         });
@@ -141,6 +148,7 @@ impl SettingsWindow {
         command_receiver: mpsc::Receiver<SettingsCommand>,
         settings_manager: Option<Arc<SettingsManager>>,
         auth_manager: Option<Arc<AuthManager>>,
+        api_client: Option<Arc<SyncApi>>,
     ) -> Result<()> {
         // Wait for the first Show command before creating the window
         let runtime = tokio::runtime::Runtime::new()?;
@@ -239,7 +247,7 @@ impl SettingsWindow {
                         (false, None, None)
                     };
                     
-                    Ok(Box::new(SettingsApp {
+                    let mut app = SettingsApp {
                         settings: settings.clone(),
                         command_receiver: rx,
                         visible: true, // Start visible since we're responding to Show
@@ -248,13 +256,27 @@ impl SettingsWindow {
                         auth_manager: auth_manager.clone(),
                         // Auth state
                         is_authenticated,
-                        user_email,
+                        user_email: user_email.clone(),
                         // Auth state
                         auth_is_loading: false,
                         auth_error: None,
                         auth_result_rx: None,
                         auth_check_rx,
-                    }))
+                        // Subscription state
+                        api_client: api_client.clone(),
+                        subscription_status: None,
+                        usage_stats: None,
+                        subscription_loading: false,
+                        subscription_rx: None,
+                    };
+                    
+                    // If authenticated on startup, fetch subscription status
+                    if is_authenticated && api_client.is_some() {
+                        info!("User authenticated on window creation ({}), fetching subscription", user_email.as_ref().unwrap_or(&"unknown".to_string()));
+                        app.fetch_subscription_status(&cc.egui_ctx);
+                    }
+                    
+                    Ok(Box::new(app))
                 }),
             ).map_err(|e| anyhow::anyhow!("Failed to run settings window: {}", e))?;
 
@@ -376,6 +398,12 @@ struct SettingsApp {
     auth_error: Option<String>,
     auth_result_rx: Option<std::sync::mpsc::Receiver<AuthResult>>,
     auth_check_rx: Option<std::sync::mpsc::Receiver<(bool, Option<String>)>>,
+    // Subscription state
+    api_client: Option<Arc<SyncApi>>,
+    subscription_status: Option<SubscriptionStatus>,
+    usage_stats: Option<UsageStats>,
+    subscription_loading: bool,
+    subscription_rx: Option<std::sync::mpsc::Receiver<(Option<SubscriptionStatus>, Option<UsageStats>)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -403,6 +431,7 @@ impl eframe::App for SettingsApp {
                     }
                     
                     // Check auth status when showing window
+                    info!("Checking auth status on window show, auth_manager exists: {}", self.auth_manager.is_some());
                     if let Some(ref auth_manager) = self.auth_manager {
                         let auth_manager_clone = auth_manager.clone();
                         let (tx, rx) = std::sync::mpsc::channel();
@@ -436,9 +465,30 @@ impl eframe::App for SettingsApp {
         // Check for auth status check results
         if let Some(ref rx) = self.auth_check_rx {
             if let Ok((is_auth, email)) = rx.try_recv() {
+                info!("Auth status check result: authenticated={}, email={:?}", is_auth, email);
                 self.is_authenticated = is_auth;
-                self.user_email = email;
+                self.user_email = email.clone();
                 self.auth_check_rx = None; // Clear after receiving
+                // Fetch subscription status if authenticated
+                if is_auth && self.api_client.is_some() {
+                    info!("User is authenticated with email: {:?}, fetching subscription automatically", email);
+                    self.fetch_subscription_status(ctx);
+                } else if is_auth {
+                    info!("User is authenticated but no API client available");
+                }
+                ctx.request_repaint();
+            }
+        }
+        
+        // Check for subscription status results
+        if let Some(ref rx) = self.subscription_rx {
+            if let Ok((subscription, usage)) = rx.try_recv() {
+                info!("Received subscription response - subscription: {}, usage: {}", 
+                      subscription.is_some(), usage.is_some());
+                self.subscription_loading = false;
+                self.subscription_status = subscription;
+                self.usage_stats = usage;
+                self.subscription_rx = None;
                 ctx.request_repaint();
             }
         }
@@ -453,6 +503,8 @@ impl eframe::App for SettingsApp {
                         self.is_authenticated = true;
                         self.user_email = Some(email);
                         self.auth_error = None;
+                        // Fetch subscription status after successful auth
+                        self.fetch_subscription_status(ctx);
                     }
                     AuthResult::Error(err) => {
                         self.auth_error = Some(err);
@@ -637,10 +689,130 @@ impl eframe::App for SettingsApp {
                                 if ui.button("📤 Logout").clicked() {
                                     should_logout = true;
                                 }
+                                if ui.button("🔃 Refresh Status").clicked() {
+                                    self.fetch_subscription_status(ui.ctx());
+                                }
                             });
                         });
                     });
                 ui.add_space(10.0);
+                
+                // Show subscription status
+                if let Some(ref subscription) = self.subscription_status {
+                    egui::Frame::none()
+                        .fill(egui::Color32::from_rgb(35, 35, 45))
+                        .rounding(egui::Rounding::same(5.0))
+                        .inner_margin(egui::Margin::same(10.0))
+                        .show(ui, |ui| {
+                            ui.vertical(|ui| {
+                                // Subscription tier
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("📦").size(16.0));
+                                    ui.label(egui::RichText::new(format!("Plan: {}", subscription.tier.name))
+                                        .color(egui::Color32::from_rgb(150, 200, 255))
+                                        .size(14.0));
+                                    if subscription.is_active() {
+                                        ui.label(egui::RichText::new("Active").color(egui::Color32::from_rgb(100, 255, 100)).size(12.0));
+                                    }
+                                    
+                                    // Add upgrade button for non-lifetime plans
+                                    if subscription.tier.id != "lifetime" {
+                                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                            if ui.button("⬆ Upgrade").clicked() {
+                                                // Open web dashboard for subscription management
+                                                let dashboard_url = format!("{}/dashboard/billing", 
+                                                    self.settings.lock().unwrap().cloud_api_url
+                                                        .replace("/api", "")
+                                                        .replace(":8080", ":3000")); // Handle local dev
+                                                
+                                                if let Err(e) = webbrowser::open(&dashboard_url) {
+                                                    error!("Failed to open browser: {}", e);
+                                                } else {
+                                                    info!("Opened dashboard URL: {}", dashboard_url);
+                                                }
+                                            }
+                                        });
+                                    }
+                                });
+                                
+                                // Usage stats
+                                if let Some(ref usage) = self.usage_stats {
+                                    ui.add_space(8.0);
+                                    
+                                    // Saves usage
+                                    ui.horizontal(|ui| {
+                                        ui.label("Saves:");
+                                        let saves_pct = usage.saves_percentage();
+                                        let color = if saves_pct > 90.0 {
+                                            egui::Color32::from_rgb(255, 100, 100)
+                                        } else if saves_pct > 75.0 {
+                                            egui::Color32::from_rgb(255, 200, 100)
+                                        } else {
+                                            egui::Color32::from_rgb(100, 255, 100)
+                                        };
+                                        ui.label(egui::RichText::new(format!("{}/{} ({:.0}%)", 
+                                            usage.saves_count, usage.saves_limit, saves_pct))
+                                            .color(color)
+                                            .size(12.0));
+                                    });
+                                    
+                                    // Storage usage
+                                    ui.horizontal(|ui| {
+                                        ui.label("Storage:");
+                                        let storage_pct = usage.storage_percentage();
+                                        let storage_gb = usage.storage_bytes as f64 / 1_073_741_824.0;
+                                        let storage_limit_gb = usage.storage_limit_bytes as f64 / 1_073_741_824.0;
+                                        let color = if storage_pct > 90.0 {
+                                            egui::Color32::from_rgb(255, 100, 100)
+                                        } else if storage_pct > 75.0 {
+                                            egui::Color32::from_rgb(255, 200, 100)
+                                        } else {
+                                            egui::Color32::from_rgb(100, 255, 100)
+                                        };
+                                        ui.label(egui::RichText::new(format!("{:.2}/{:.0} GB ({:.0}%)", 
+                                            storage_gb, storage_limit_gb, storage_pct))
+                                            .color(color)
+                                            .size(12.0));
+                                    });
+                                    
+                                    // Devices usage
+                                    ui.horizontal(|ui| {
+                                        ui.label("Devices:");
+                                        let devices_pct = if usage.devices_limit > 0 {
+                                            (usage.devices_count as f32 / usage.devices_limit as f32) * 100.0
+                                        } else {
+                                            0.0
+                                        };
+                                        let color = if devices_pct >= 100.0 {
+                                            egui::Color32::from_rgb(255, 100, 100)
+                                        } else if devices_pct > 80.0 {
+                                            egui::Color32::from_rgb(255, 200, 100)
+                                        } else {
+                                            egui::Color32::from_rgb(100, 255, 100)
+                                        };
+                                        ui.label(egui::RichText::new(format!("{}/{}", 
+                                            usage.devices_count, usage.devices_limit))
+                                            .color(color)
+                                            .size(12.0));
+                                    });
+                                    
+                                    // Warning if near limits
+                                    if usage.is_near_limit() {
+                                        ui.add_space(5.0);
+                                        ui.label(egui::RichText::new("⚠ Approaching limits")
+                                            .color(egui::Color32::from_rgb(255, 200, 100))
+                                            .size(11.0));
+                                    }
+                                }
+                            });
+                        });
+                    ui.add_space(10.0);
+                } else if self.subscription_loading {
+                    ui.label(egui::RichText::new("⏳ Loading subscription status...")
+                        .color(egui::Color32::from_rgb(150, 150, 150))
+                        .size(12.0));
+                    ui.add_space(10.0);
+                }
                 
                 // Cloud sync checkbox for authenticated users
                 {
@@ -819,6 +991,76 @@ impl eframe::App for SettingsApp {
 }
 
 impl SettingsApp {
+    fn fetch_subscription_status(&mut self, ctx: &egui::Context) {
+        info!("fetch_subscription_status called, api_client exists: {}", self.api_client.is_some());
+        if let Some(ref api_client) = self.api_client {
+            if self.subscription_loading {
+                info!("Already loading subscription, skipping");
+                return; // Already loading
+            }
+            
+            info!("Starting subscription fetch");
+            self.subscription_loading = true;
+            let api_client_clone = api_client.clone();
+            let (tx, rx) = std::sync::mpsc::channel();
+            
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    let mut subscription = None;
+                    let mut usage = None;
+                    
+                    // Fetch subscription status with retry on auth refresh
+                    for attempt in 0..2 {
+                        match api_client_clone.get_subscription_status().await {
+                            Ok(status) => {
+                                subscription = Some(status);
+                                break;
+                            },
+                            Err(e) => {
+                                let error_str = e.to_string();
+                                if error_str.contains("Authentication refreshed") && attempt == 0 {
+                                    // First attempt failed with auth refresh, retry
+                                    info!("Retrying subscription fetch after auth refresh");
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                    continue;
+                                }
+                                error!("Failed to fetch subscription status: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Fetch usage stats with retry on auth refresh
+                    for attempt in 0..2 {
+                        match api_client_clone.get_usage_stats().await {
+                            Ok(stats) => {
+                                usage = Some(stats);
+                                break;
+                            },
+                            Err(e) => {
+                                let error_str = e.to_string();
+                                if error_str.contains("Authentication refreshed") && attempt == 0 {
+                                    // First attempt failed with auth refresh, retry
+                                    info!("Retrying usage stats fetch after auth refresh");
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                    continue;
+                                }
+                                error!("Failed to fetch usage stats: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    
+                    let _ = tx.send((subscription, usage));
+                });
+            });
+            
+            self.subscription_rx = Some(rx);
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+    }
+    
     fn perform_logout(&mut self, ctx: &egui::Context) {
         if let Some(ref auth_manager) = self.auth_manager {
             let auth_manager_clone = auth_manager.clone();
@@ -834,6 +1076,8 @@ impl SettingsApp {
             });
             self.is_authenticated = false;
             self.user_email = None;
+            self.subscription_status = None;
+            self.usage_stats = None;
         }
         ctx.request_repaint();
     }

@@ -6,6 +6,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 use tracing::{debug, warn};
 use tokio::sync::mpsc;
+use crate::payment::{SubscriptionStatus, UsageStats};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
@@ -319,5 +320,43 @@ impl SyncApi {
         }
 
         Ok(())
+    }
+
+    /// Get subscription status
+    pub async fn get_subscription_status(&self) -> Result<SubscriptionStatus> {
+        let token = self.auth_manager.get_access_token().await
+            .context("Not authenticated")?;
+        
+        debug!("Fetching subscription with token: {}...", &token[..20.min(token.len())]);
+
+        let response = self.client
+            .get(format!("{}/api/subscriptions/status", self.base_url))
+            .bearer_auth(token)
+            .send()
+            .await
+            .context("Failed to get subscription status")?;
+
+        let response = self.check_response(response).await?;
+
+        response.json().await
+            .context("Failed to parse subscription status response")
+    }
+
+    /// Get usage statistics
+    pub async fn get_usage_stats(&self) -> Result<UsageStats> {
+        let token = self.auth_manager.get_access_token().await
+            .context("Not authenticated")?;
+
+        let response = self.client
+            .get(format!("{}/api/subscriptions/usage", self.base_url))
+            .bearer_auth(token)
+            .send()
+            .await
+            .context("Failed to get usage stats")?;
+
+        let response = self.check_response(response).await?;
+
+        response.json().await
+            .context("Failed to parse usage stats response")
     }
 }

@@ -337,14 +337,17 @@ impl AuthManager {
     async fn fetch_user_info(&self, access_token: &str) -> Result<UserInfo> {
         let client = reqwest::Client::new();
         
+        debug!("Fetching user profile with token: {}...", &access_token[..20.min(access_token.len())]);
+        
         let response = client
-            .post(format!("{}/api/auth/me", self.api_base_url))
+            .get(format!("{}/api/auth/profile", self.api_base_url))
             .bearer_auth(access_token)
             .send()
             .await
             .context("Failed to get user info")?;
 
         if !response.status().is_success() {
+            debug!("Profile fetch failed with status: {}", response.status());
             return Err(anyhow::anyhow!("Failed to get user info"));
         }
 
