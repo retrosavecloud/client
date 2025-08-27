@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use tracing::{info, debug};
 use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Game {
     pub id: i64,
     pub name: String,
@@ -15,7 +15,7 @@ pub struct Game {
     pub total_saves: i32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Save {
     pub id: i64,
     pub game_id: i64,

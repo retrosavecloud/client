@@ -5,6 +5,11 @@ use std::path::Path;
 use tracing::{debug, info};
 use zstd::stream::{encode_all, decode_all};
 
+/// Standalone decompress function for convenience
+pub fn decompress(data: &[u8]) -> Result<Vec<u8>> {
+    decode_all(data).context("Failed to decompress data")
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CompressionStats {
     pub original_size: u64,

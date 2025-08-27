@@ -11,6 +11,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Load .env file if it exists (for development)
+    dotenv::dotenv().ok();
+    
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter("retrosave=debug")
@@ -181,7 +184,7 @@ async fn main() -> Result<()> {
                             
                             let _ = tray.send_message(TrayMessage::GameDetected(name)).await;
                         }
-                        retrosave::monitor::MonitorEvent::SaveDetected { game_name, emulator, file_path } => {
+                        retrosave::monitor::MonitorEvent::SaveDetected { game_name, emulator: _, file_path } => {
                             // Show desktop notification if enabled
                             if settings_window_clone.get_settings().show_notifications {
                                 notif_manager_clone.notify_save_detected(&game_name);
@@ -190,25 +193,8 @@ async fn main() -> Result<()> {
                             tray.show_notification("Save Detected", &format!("{} saved", game_name));
                             let _ = tray.send_message(TrayMessage::SaveDetected(format!("{}: {}", game_name, file_path))).await;
                             
-                            // Send to sync service if cloud sync is enabled
-                            let settings = settings_window_clone.get_settings();
-                            if settings.cloud_sync_enabled {
-                                // Calculate file hash and size
-                                if let Ok(data) = tokio::fs::read(&file_path).await {
-                                    use sha2::{Sha256, Digest};
-                                    let mut hasher = Sha256::new();
-                                    hasher.update(&data);
-                                    let hash = format!("{:x}", hasher.finalize());
-                                    
-                                    let _ = sync_event_sender_clone.send(SyncEvent::SaveDetected {
-                                        game_name: game_name.clone(),
-                                        emulator,
-                                        file_path,
-                                        file_hash: hash,
-                                        file_size: data.len() as i64,
-                                    });
-                                }
-                            }
+                            // Note: The sync event is already sent from monitor/mod.rs when it detects a save
+                            // No need to duplicate it here as it causes double uploads
                         }
                         retrosave::monitor::MonitorEvent::ManualSaveResult(result) => {
                             // Play audio feedback
@@ -263,6 +249,28 @@ async fn main() -> Result<()> {
                             }
                             
                             let _ = cmd_sender_clone.send(retrosave::monitor::MonitorCommand::TriggerManualSave).await;
+                        }
+                        TrayMessage::OpenDashboard => {
+                            info!("Opening dashboard in browser");
+                            
+                            // Get the dashboard URL from environment or use default
+                            let dashboard_url = std::env::var("RETROSAVE_WEB_URL")
+                                .unwrap_or_else(|_| {
+                                    if cfg!(debug_assertions) {
+                                        "http://localhost:3000".to_string()
+                                    } else {
+                                        "https://retrosave.cloud".to_string()
+                                    }
+                                });
+                            
+                            let full_url = format!("{}/dashboard", dashboard_url);
+                            
+                            // Open in default browser
+                            if let Err(e) = open::that(&full_url) {
+                                error!("Failed to open dashboard in browser: {}", e);
+                            } else {
+                                info!("Opened dashboard at: {}", full_url);
+                            }
                         }
                         TrayMessage::OpenSettings => {
                             info!("Opening settings window");

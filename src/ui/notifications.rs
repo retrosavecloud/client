@@ -1,5 +1,14 @@
 use notify_rust::{Notification, Timeout};
 use tracing::{debug, warn};
+use anyhow::Result;
+
+#[derive(Debug, Clone, Copy)]
+pub enum NotificationType {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
 
 pub struct NotificationManager {
     enabled: bool,
@@ -137,4 +146,34 @@ impl NotificationManager {
             "Settings have been saved successfully",
         );
     }
+}
+
+// Standalone function for showing notifications without manager
+pub fn show_notification(title: &str, message: &str, notification_type: NotificationType) -> Result<()> {
+    let icon = match notification_type {
+        NotificationType::Info => "dialog-information",
+        NotificationType::Success => "dialog-positive", 
+        NotificationType::Warning => "dialog-warning",
+        NotificationType::Error => "dialog-error",
+    };
+    
+    Notification::new()
+        .summary(title)
+        .body(message)
+        .appname("Retrosave")
+        .icon(icon)
+        .timeout(Timeout::Milliseconds(5000))
+        .show()?;
+    
+    debug!("Showed {} notification: {} - {}", 
+        match notification_type {
+            NotificationType::Info => "info",
+            NotificationType::Success => "success",
+            NotificationType::Warning => "warning",
+            NotificationType::Error => "error",
+        },
+        title, message
+    );
+    
+    Ok(())
 }

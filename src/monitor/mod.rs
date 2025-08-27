@@ -403,192 +403,184 @@ pub async fn start_monitoring_with_sync(
                     debug!("PCSX2 running - PID: {}, Path: {}", pid, exe_path);
                     
                     // Try to get the actual game name
-                    if let Some(game_name) = process::get_pcsx2_game_name(*pid) {
-                        current_game_name = Some(game_name.clone());
+                    let detected_game = process::get_pcsx2_game_name(*pid)
+                        .unwrap_or_else(|| "Unknown Game".to_string());
+                    
+                    // Only send event if game changed
+                    if current_game_name.as_ref() != Some(&detected_game) {
+                        current_game_name = Some(detected_game.clone());
                         
                         // Update SaveWatcher with the current game name
                         if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(Some(game_name.clone())).await;
+                            if detected_game != "Unknown Game" {
+                                watcher.set_current_game(Some(detected_game.clone())).await;
+                            } else {
+                                watcher.set_current_game(None).await;
+                            }
                         }
                         
-                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
-                    } else {
-                        current_game_name = Some("Unknown Game".to_string());
-                        
-                        // Clear game name in SaveWatcher
-                        if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(None).await;
-                        }
-                        
-                        let _ = sender.send(MonitorEvent::GameDetected("Unknown Game".to_string())).await;
+                        let _ = sender.send(MonitorEvent::GameDetected(detected_game)).await;
                     }
                 }
                 process::EmulatorProcess::Dolphin { pid, exe_path } => {
                     debug!("Dolphin running - PID: {}, Path: {}", pid, exe_path);
                     
                     // Try to get the actual game name
-                    if let Some(game_name) = process::get_dolphin_game_name(*pid) {
-                        current_game_name = Some(game_name.clone());
+                    let detected_game = process::get_dolphin_game_name(*pid)
+                        .unwrap_or_else(|| "Unknown GameCube/Wii Game".to_string());
+                    
+                    // Only send event if game changed
+                    if current_game_name.as_ref() != Some(&detected_game) {
+                        current_game_name = Some(detected_game.clone());
                         
                         // Update SaveWatcher with the current game name
                         if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(Some(game_name.clone())).await;
+                            if detected_game != "Unknown GameCube/Wii Game" {
+                                watcher.set_current_game(Some(detected_game.clone())).await;
+                            } else {
+                                watcher.set_current_game(None).await;
+                            }
                         }
                         
-                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
-                    } else {
-                        current_game_name = Some("Unknown GameCube/Wii Game".to_string());
-                        
-                        // Clear game name in SaveWatcher
-                        if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(None).await;
-                        }
-                        
-                        let _ = sender.send(MonitorEvent::GameDetected("Unknown GameCube/Wii Game".to_string())).await;
+                        let _ = sender.send(MonitorEvent::GameDetected(detected_game)).await;
                     }
                 }
                 process::EmulatorProcess::RPCS3 { pid, exe_path } => {
                     debug!("RPCS3 running - PID: {}, Path: {}", pid, exe_path);
                     
                     // Try to get the actual game name
-                    if let Some(game_name) = process::get_rpcs3_game_name(*pid) {
-                        current_game_name = Some(game_name.clone());
+                    let detected_game = process::get_rpcs3_game_name(*pid)
+                        .unwrap_or_else(|| "Unknown PS3 Game".to_string());
+                    
+                    // Only send event if game changed
+                    if current_game_name.as_ref() != Some(&detected_game) {
+                        current_game_name = Some(detected_game.clone());
                         
                         // Update SaveWatcher with the current game name
                         if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(Some(game_name.clone())).await;
+                            if detected_game != "Unknown PS3 Game" {
+                                watcher.set_current_game(Some(detected_game.clone())).await;
+                            } else {
+                                watcher.set_current_game(None).await;
+                            }
                         }
                         
-                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
-                    } else {
-                        current_game_name = Some("Unknown PS3 Game".to_string());
-                        
-                        // Clear game name in SaveWatcher
-                        if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(None).await;
-                        }
-                        
-                        let _ = sender.send(MonitorEvent::GameDetected("Unknown PS3 Game".to_string())).await;
+                        let _ = sender.send(MonitorEvent::GameDetected(detected_game)).await;
                     }
                 }
                 process::EmulatorProcess::Citra { pid, exe_path } => {
                     debug!("Citra running - PID: {}, Path: {}", pid, exe_path);
                     
                     // Try to get the actual game name
-                    if let Some(game_name) = process::get_citra_game_name(*pid) {
-                        current_game_name = Some(game_name.clone());
+                    let detected_game = process::get_citra_game_name(*pid)
+                        .unwrap_or_else(|| "Unknown 3DS Game".to_string());
+                    
+                    // Only send event if game changed
+                    if current_game_name.as_ref() != Some(&detected_game) {
+                        current_game_name = Some(detected_game.clone());
                         
                         // Update SaveWatcher with the current game name
                         if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(Some(game_name.clone())).await;
+                            if detected_game != "Unknown 3DS Game" {
+                                watcher.set_current_game(Some(detected_game.clone())).await;
+                            } else {
+                                watcher.set_current_game(None).await;
+                            }
                         }
                         
-                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
-                    } else {
-                        current_game_name = Some("Unknown 3DS Game".to_string());
-                        
-                        // Clear game name in SaveWatcher
-                        if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(None).await;
-                        }
-                        
-                        let _ = sender.send(MonitorEvent::GameDetected("Unknown 3DS Game".to_string())).await;
+                        let _ = sender.send(MonitorEvent::GameDetected(detected_game)).await;
                     }
                 }
                 process::EmulatorProcess::RetroArch { pid, exe_path } => {
                     debug!("RetroArch running - PID: {}, Path: {}", pid, exe_path);
                     
                     // Try to get the actual game name
-                    if let Some(game_name) = process::get_retroarch_game_name(*pid) {
-                        current_game_name = Some(game_name.clone());
+                    let detected_game = process::get_retroarch_game_name(*pid)
+                        .unwrap_or_else(|| "Unknown RetroArch Game".to_string());
+                    
+                    // Only send event if game changed
+                    if current_game_name.as_ref() != Some(&detected_game) {
+                        current_game_name = Some(detected_game.clone());
                         
                         // Update SaveWatcher with the current game name
                         if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(Some(game_name.clone())).await;
+                            if detected_game != "Unknown RetroArch Game" {
+                                watcher.set_current_game(Some(detected_game.clone())).await;
+                            } else {
+                                watcher.set_current_game(None).await;
+                            }
                         }
                         
-                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
-                    } else {
-                        current_game_name = Some("Unknown RetroArch Game".to_string());
-                        
-                        // Clear game name in SaveWatcher
-                        if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(None).await;
-                        }
-                        
-                        let _ = sender.send(MonitorEvent::GameDetected("Unknown RetroArch Game".to_string())).await;
+                        let _ = sender.send(MonitorEvent::GameDetected(detected_game)).await;
                     }
                 }
                 process::EmulatorProcess::Yuzu { pid, exe_path } => {
                     debug!("Yuzu running - PID: {}, Path: {}", pid, exe_path);
                     
                     // Try to get the actual game name
-                    if let Some(game_name) = process::get_yuzu_game_name(*pid) {
-                        current_game_name = Some(game_name.clone());
+                    let detected_game = process::get_yuzu_game_name(*pid)
+                        .unwrap_or_else(|| "Unknown Switch Game".to_string());
+                    
+                    // Only send event if game changed
+                    if current_game_name.as_ref() != Some(&detected_game) {
+                        current_game_name = Some(detected_game.clone());
                         
                         // Update SaveWatcher with the current game name
                         if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(Some(game_name.clone())).await;
+                            if detected_game != "Unknown Switch Game" {
+                                watcher.set_current_game(Some(detected_game.clone())).await;
+                            } else {
+                                watcher.set_current_game(None).await;
+                            }
                         }
                         
-                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
-                    } else {
-                        current_game_name = Some("Unknown Switch Game".to_string());
-                        
-                        // Clear game name in SaveWatcher
-                        if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(None).await;
-                        }
-                        
-                        let _ = sender.send(MonitorEvent::GameDetected("Unknown Switch Game".to_string())).await;
+                        let _ = sender.send(MonitorEvent::GameDetected(detected_game)).await;
                     }
                 }
                 process::EmulatorProcess::Ryujinx { pid, exe_path } => {
                     debug!("Ryujinx running - PID: {}, Path: {}", pid, exe_path);
                     
                     // Try to get the actual game name
-                    if let Some(game_name) = process::get_ryujinx_game_name(*pid) {
-                        current_game_name = Some(game_name.clone());
+                    let detected_game = process::get_ryujinx_game_name(*pid)
+                        .unwrap_or_else(|| "Unknown Switch Game".to_string());
+                    
+                    // Only send event if game changed
+                    if current_game_name.as_ref() != Some(&detected_game) {
+                        current_game_name = Some(detected_game.clone());
                         
                         // Update SaveWatcher with the current game name
                         if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(Some(game_name.clone())).await;
+                            if detected_game != "Unknown Switch Game" {
+                                watcher.set_current_game(Some(detected_game.clone())).await;
+                            } else {
+                                watcher.set_current_game(None).await;
+                            }
                         }
                         
-                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
-                    } else {
-                        current_game_name = Some("Unknown Switch Game".to_string());
-                        
-                        // Clear game name in SaveWatcher
-                        if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(None).await;
-                        }
-                        
-                        let _ = sender.send(MonitorEvent::GameDetected("Unknown Switch Game".to_string())).await;
+                        let _ = sender.send(MonitorEvent::GameDetected(detected_game)).await;
                     }
                 }
                 process::EmulatorProcess::PPSSPP { pid, exe_path } => {
                     debug!("PPSSPP running - PID: {}, Path: {}", pid, exe_path);
                     
                     // Try to get the actual game name
-                    if let Some(game_name) = process::get_ppsspp_game_name(*pid) {
-                        current_game_name = Some(game_name.clone());
+                    let detected_game = process::get_ppsspp_game_name(*pid)
+                        .unwrap_or_else(|| "Unknown PSP Game".to_string());
+                    
+                    // Only send event if game changed
+                    if current_game_name.as_ref() != Some(&detected_game) {
+                        current_game_name = Some(detected_game.clone());
                         
                         // Update SaveWatcher with the current game name
                         if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(Some(game_name.clone())).await;
+                            if detected_game != "Unknown PSP Game" {
+                                watcher.set_current_game(Some(detected_game.clone())).await;
+                            } else {
+                                watcher.set_current_game(None).await;
+                            }
                         }
                         
-                        let _ = sender.send(MonitorEvent::GameDetected(game_name)).await;
-                    } else {
-                        current_game_name = Some("Unknown PSP Game".to_string());
-                        
-                        // Clear game name in SaveWatcher
-                        if let Some(ref watcher) = save_watcher {
-                            watcher.set_current_game(None).await;
-                        }
-                        
-                        let _ = sender.send(MonitorEvent::GameDetected("Unknown PSP Game".to_string())).await;
+                        let _ = sender.send(MonitorEvent::GameDetected(detected_game)).await;
                     }
                 }
             }

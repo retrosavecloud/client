@@ -173,7 +173,7 @@ impl SaveWatcher {
         current_game_name: &Arc<RwLock<Option<String>>>,
         last_event_times: &Arc<Mutex<HashMap<PathBuf, Instant>>>,
     ) -> Result<()> {
-        const DEBOUNCE_DURATION: Duration = Duration::from_millis(500);
+        const DEBOUNCE_DURATION: Duration = Duration::from_secs(3); // 3 seconds to group PCSX2's multiple writes during save
         
         match event.kind {
             EventKind::Create(_) | EventKind::Modify(_) => {

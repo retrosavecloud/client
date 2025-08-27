@@ -70,6 +70,7 @@ webbrowser = "1.0"
 # Configuration
 toml = "0.8"
 directories = "5.0"
+dotenv = "0.15"
 dirs = "5.0"
 
 # Security

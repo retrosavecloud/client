@@ -6,6 +6,7 @@ use std::sync::Arc;
 use serde::{Serialize, Deserialize};
 use tracing::{info, debug, warn, error};
 use tokio::time::{Duration, interval};
+use super::event_handler::EventHandler;
 
 /// WebSocket message types
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +63,58 @@ pub enum WsMessage {
     Error {
         message: String,
     },
+    
+    /// Real-time subscription update
+    SubscriptionUpdated {
+        tier: String,
+        status: String,
+        billing_period: String,
+        limits: SubscriptionLimits,
+    },
+    
+    /// Real-time usage update
+    UsageUpdated {
+        saves_count: i32,
+        saves_limit: i32,
+        storage_bytes: i64,
+        storage_limit_bytes: i64,
+        devices_count: i32,
+        devices_limit: i32,
+    },
+    
+    /// Device added notification
+    DeviceAdded {
+        device_id: String,
+        device_name: String,
+        device_type: String,
+    },
+    
+    /// Device removed notification
+    DeviceRemoved {
+        device_id: String,
+        device_name: String,
+    },
+    
+    /// Storage limit warning
+    StorageLimitWarning {
+        percentage: f32,
+        message: String,
+    },
+    
+    /// Save limit warning
+    SaveLimitWarning {
+        percentage: f32,
+        message: String,
+    },
+}
+
+/// Subscription limits for WebSocket messages
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscriptionLimits {
+    pub saves: Option<i32>,
+    pub storage_gb: i32,
+    pub devices: i32,
+    pub family_members: i32,
 }
 
 /// WebSocket client for real-time updates
@@ -70,6 +123,7 @@ pub struct WebSocketClient {
     token: Option<String>,
     connection: Arc<RwLock<Option<WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>>>>,
     event_tx: mpsc::UnboundedSender<WsMessage>,
+    event_handler: Arc<EventHandler>,
     reconnect_attempts: Arc<RwLock<u32>>,
 }
 
@@ -86,8 +140,14 @@ impl WebSocketClient {
             token: None,
             connection: Arc::new(RwLock::new(None)),
             event_tx,
+            event_handler: Arc::new(EventHandler::new()),
             reconnect_attempts: Arc::new(RwLock::new(0)),
         }
+    }
+    
+    /// Get a reference to the event handler for registering callbacks
+    pub fn event_handler(&self) -> Arc<EventHandler> {
+        self.event_handler.clone()
     }
     
     /// Set authentication token
@@ -185,6 +245,15 @@ impl WebSocketClient {
                         match serde_json::from_str::<WsMessage>(&text) {
                             Ok(message) => {
                                 debug!("Received WebSocket message: {:?}", message);
+                                
+                                // Process message through event handler
+                                let event_handler = self.event_handler.clone();
+                                let msg_clone = message.clone();
+                                tokio::spawn(async move {
+                                    event_handler.handle_message(msg_clone).await;
+                                });
+                                
+                                // Also send through the channel for backward compatibility
                                 if let Err(e) = self.event_tx.send(message) {
                                     error!("Failed to send event: {}", e);
                                 }

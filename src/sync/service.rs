@@ -415,7 +415,7 @@ impl SyncService {
         // Get list of saves from server
         let saves_response = self.api.list_saves(None, 1, 100).await?;
         
-        if saves_response.saves.is_empty() {
+        if saves_response.items.is_empty() {
             debug!("No saves to download");
             return Ok(());
         }
@@ -424,7 +424,7 @@ impl SyncService {
         
         // Track downloads
         let mut downloaded = 0;
-        let mut pending_downloads = saves_response.saves.len();
+        let mut pending_downloads = saves_response.items.len();
         
         // Update pending downloads count
         {
@@ -433,7 +433,7 @@ impl SyncService {
         }
         
         // Process each cloud save
-        for cloud_save in saves_response.saves {
+        for cloud_save in saves_response.items {
             // For now, skip saves we can't map to local games
             // In a full implementation, we'd maintain a UUID->i64 mapping
             // or store cloud game IDs in local database

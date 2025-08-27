@@ -23,6 +23,7 @@ pub enum TrayMessage {
     UpdateStatus(String),
     ManualSaveRequested,
     OpenSettings,
+    OpenDashboard,
     HotkeyChanged(Option<String>),
     // Cloud sync messages
     SyncStarted,
@@ -138,6 +139,10 @@ impl SystemTray {
         // Separator
         menu.append(&PredefinedMenuItem::separator())?;
         
+        // Dashboard item
+        let dashboard_item = MenuItem::new("Dashboard", true, None);
+        menu.append(&dashboard_item)?;
+        
         // Settings item
         let settings_item = MenuItem::new("Settings", true, None);
         menu.append(&settings_item)?;
@@ -156,6 +161,7 @@ impl SystemTray {
         // Store menu item IDs for the event handler
         let exit_id = exit_item.id().clone();
         let save_now_id = save_now_item.id().clone();
+        let dashboard_id = dashboard_item.id().clone();
         let settings_id = settings_item.id().clone();
         let about_id = about_item.id().clone();
         
@@ -207,6 +213,9 @@ impl SystemTray {
                 } else if event.id == save_now_id {
                     info!("Manual save requested from tray menu");
                     let _ = event_sender.try_send(TrayMessage::ManualSaveRequested);
+                } else if event.id == dashboard_id {
+                    info!("Dashboard clicked");
+                    let _ = event_sender.try_send(TrayMessage::OpenDashboard);
                 } else if event.id == settings_id {
                     info!("Settings clicked");
                     let _ = event_sender.try_send(TrayMessage::OpenSettings);
@@ -262,6 +271,10 @@ impl SystemTray {
         // Separator
         menu.append(&PredefinedMenuItem::separator())?;
         
+        // Dashboard item
+        let dashboard_item = MenuItem::new("Dashboard", true, None);
+        menu.append(&dashboard_item)?;
+        
         // Settings item
         let settings_item = MenuItem::new("Settings", true, None);
         menu.append(&settings_item)?;
@@ -280,6 +293,7 @@ impl SystemTray {
         // Store menu item IDs for the event handler
         let exit_id = exit_item.id().clone();
         let save_now_id = save_now_item.id().clone();
+        let dashboard_id = dashboard_item.id().clone();
         let settings_id = settings_item.id().clone();
         let about_id = about_item.id().clone();
         
@@ -309,6 +323,9 @@ impl SystemTray {
                     } else if event.id == save_now_id {
                         info!("Manual save requested from tray menu");
                         let _ = event_sender.blocking_send(TrayMessage::ManualSaveRequested);
+                    } else if event.id == dashboard_id {
+                        info!("Dashboard clicked");
+                        let _ = event_sender.blocking_send(TrayMessage::OpenDashboard);
                     } else if event.id == settings_id {
                         info!("Settings clicked");
                         let _ = event_sender.blocking_send(TrayMessage::OpenSettings);

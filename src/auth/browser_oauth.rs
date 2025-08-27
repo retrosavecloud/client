@@ -7,7 +7,7 @@ use std::io::Write;
 use std::net::TcpListener;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, debug, error};
+use tracing::{info, debug};
 
 /// OAuth client for browser-based authentication
 pub struct BrowserOAuth {

@@ -54,10 +54,13 @@ pub struct UploadUrlResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct ListSavesResponse {
-    pub saves: Vec<SaveMetadata>,
+    pub items: Vec<SaveMetadata>,  // Changed from 'saves' to match backend's PaginatedResponse
     pub total: i64,
     pub page: i64,
     pub per_page: i64,
+    pub total_pages: i64,
+    pub has_next: bool,
+    pub has_prev: bool,
 }
 
 /// Events that can occur during API operations
@@ -245,7 +248,7 @@ impl SyncApi {
         let token = self.auth_manager.get_access_token().await
             .context("Not authenticated")?;
 
-        let mut url = format!("{}/api/saves/list?page={}&per_page={}", self.base_url, page, per_page);
+        let mut url = format!("{}/api/saves?page={}&per_page={}", self.base_url, page, per_page);
         
         if let Some(game_id) = game_id {
             url.push_str(&format!("&game_id={}", game_id));

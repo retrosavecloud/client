@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use tracing::{debug, info, error};
 use tokio::sync::mpsc;
 use crate::storage::SettingsManager;
-use crate::sync::{AuthManager, api::SyncApi};
+use crate::sync::{AuthManager, api::SyncApi, WebSocketClient};
 use crate::payment::{SubscriptionStatus, UsageStats};
 
 #[derive(Debug, Clone)]
@@ -268,6 +268,11 @@ impl SettingsWindow {
                         usage_stats: None,
                         subscription_loading: false,
                         subscription_rx: None,
+                        // WebSocket client
+                        ws_client: None,
+                        ws_initialized: false,
+                        ws_subscription_rx: None,
+                        ws_usage_rx: None,
                     };
                     
                     // If authenticated on startup, fetch subscription status
@@ -404,6 +409,11 @@ struct SettingsApp {
     usage_stats: Option<UsageStats>,
     subscription_loading: bool,
     subscription_rx: Option<std::sync::mpsc::Receiver<(Option<SubscriptionStatus>, Option<UsageStats>)>>,
+    // WebSocket client for real-time updates
+    ws_client: Option<Arc<WebSocketClient>>,
+    ws_initialized: bool,
+    ws_subscription_rx: Option<std::sync::mpsc::Receiver<SubscriptionStatus>>,
+    ws_usage_rx: Option<std::sync::mpsc::Receiver<UsageStats>>,
 }
 
 #[derive(Debug, Clone)]
@@ -414,6 +424,57 @@ enum AuthResult {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Initialize WebSocket for real-time updates if authenticated
+        if self.is_authenticated && !self.ws_initialized {
+            self.initialize_websocket(ctx);
+        }
+        
+        // Check for real-time subscription updates from WebSocket
+        if let Some(ref rx) = self.ws_subscription_rx {
+            if let Ok(status) = rx.try_recv() {
+                info!("Received real-time subscription update in UI");
+                self.subscription_status = Some(status);
+                self.subscription_loading = false;
+            }
+        }
+        
+        // Check for real-time usage updates from WebSocket
+        if let Some(ref rx) = self.ws_usage_rx {
+            if let Ok(stats) = rx.try_recv() {
+                info!("Received real-time usage update in UI");
+                self.usage_stats = Some(stats);
+            }
+        }
+        
+        // Check if window just gained focus after being in background (user might have upgraded in browser)
+        static mut LAST_FOCUS_STATE: bool = false;
+        let is_focused = ctx.input(|i| i.focused);
+        let gained_focus = unsafe {
+            let was_unfocused = !LAST_FOCUS_STATE;
+            LAST_FOCUS_STATE = is_focused;
+            is_focused && was_unfocused
+        };
+        
+        if gained_focus && self.is_authenticated && !self.subscription_loading && self.api_client.is_some() {
+            // Window regained focus - user might have upgraded in browser
+            // Only refresh if it's been at least 5 seconds since last fetch to avoid rapid refreshes
+            static mut LAST_FETCH_TIME: Option<std::time::Instant> = None;
+            let should_refresh = unsafe {
+                match LAST_FETCH_TIME {
+                    None => true,
+                    Some(last) => last.elapsed() > std::time::Duration::from_secs(5),
+                }
+            };
+            
+            if should_refresh {
+                info!("Window regained focus, refreshing subscription status");
+                self.fetch_subscription_status(ctx);
+                unsafe {
+                    LAST_FETCH_TIME = Some(std::time::Instant::now());
+                }
+            }
+        }
+        
         // Check for commands
         if let Ok(cmd) = self.command_receiver.try_recv() {
             match cmd {
@@ -503,6 +564,8 @@ impl eframe::App for SettingsApp {
                         self.is_authenticated = true;
                         self.user_email = Some(email);
                         self.auth_error = None;
+                        // Reset WebSocket initialized flag to trigger reconnection with new auth
+                        self.ws_initialized = false;
                         // Fetch subscription status after successful auth
                         self.fetch_subscription_status(ctx);
                     }
@@ -991,6 +1054,161 @@ impl eframe::App for SettingsApp {
 }
 
 impl SettingsApp {
+    fn initialize_websocket(&mut self, ctx: &egui::Context) {
+        if self.ws_initialized || !self.is_authenticated {
+            return;
+        }
+        
+        info!("Initializing WebSocket connection for real-time updates");
+        
+        // Get API URL from settings
+        let api_url = self.settings.lock().unwrap().cloud_api_url.clone();
+        
+        // Create WebSocket event channel
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        
+        // Create WebSocket client
+        let ws_client = Arc::new(WebSocketClient::new(api_url.clone(), event_tx));
+        let ws_client_clone = ws_client.clone();
+        
+        // Get auth token if available
+        if let Some(ref auth_manager) = self.auth_manager {
+            let auth_manager_clone = auth_manager.clone();
+            let ws_client_for_auth = ws_client.clone();
+            let api_url_clone = api_url.clone();
+            
+            // Set up WebSocket with auth token
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Some(token) = auth_manager_clone.get_access_token().await {
+                        // Create a new mutable WebSocket client with the token
+                        let mut ws = WebSocketClient::new(api_url_clone.clone(), tokio::sync::mpsc::unbounded_channel().0);
+                        ws.set_token(token).await;
+                        
+                        // Connect to WebSocket
+                        if let Err(e) = ws_client_for_auth.connect().await {
+                            error!("Failed to connect WebSocket: {}", e);
+                        } else {
+                            info!("WebSocket connected successfully");
+                            
+                            // Start listening for messages
+                            let ws_listener = ws_client_for_auth.clone();
+                            tokio::spawn(async move {
+                                ws_listener.start_listening().await;
+                            });
+                        }
+                    }
+                });
+            });
+        }
+        
+        // Create channels to update the UI from callbacks
+        let (subscription_tx, subscription_rx) = std::sync::mpsc::channel::<SubscriptionStatus>();
+        let (usage_tx, usage_rx) = std::sync::mpsc::channel::<UsageStats>();
+        
+        // Store receivers so we can poll them in the update loop
+        self.ws_subscription_rx = Some(subscription_rx);
+        self.ws_usage_rx = Some(usage_rx);
+        
+        // Register subscription update callback
+        let ctx_clone = ctx.clone();
+        let ws_handler = ws_client.event_handler();
+        let subscription_callback = {
+            let ctx = ctx_clone.clone();
+            let tx = subscription_tx.clone();
+            move |status: SubscriptionStatus| {
+                info!("Received real-time subscription update: {:?}", status);
+                let _ = tx.send(status);
+                ctx.request_repaint();
+            }
+        };
+        
+        // Register usage update callback
+        let ctx_clone2 = ctx.clone();
+        let usage_callback = {
+            let ctx = ctx_clone2.clone();
+            let tx = usage_tx.clone();
+            move |stats: UsageStats| {
+                info!("Received real-time usage update: {:?}", stats);
+                let _ = tx.send(stats);
+                ctx.request_repaint();
+            }
+        };
+        
+        // Register device added callback
+        let ctx_clone3 = ctx.clone();
+        let device_added_callback = {
+            let ctx = ctx_clone3.clone();
+            move |device_id: String, device_name: String| {
+                info!("Device added: {} ({})", device_name, device_id);
+                // Show notification to user
+                if let Err(e) = crate::ui::notifications::show_notification(
+                    "Device Added",
+                    &format!("New device '{}' has been added to your account", device_name),
+                    crate::ui::notifications::NotificationType::Info,
+                ) {
+                    error!("Failed to show device added notification: {}", e);
+                }
+                ctx.request_repaint();
+            }
+        };
+        
+        // Register device removed callback
+        let ctx_clone4 = ctx.clone();
+        let device_removed_callback = {
+            let ctx = ctx_clone4.clone();
+            move |device_id: String, device_name: String| {
+                info!("Device removed: {} ({})", device_name, device_id);
+                // Show notification to user
+                if let Err(e) = crate::ui::notifications::show_notification(
+                    "Device Removed",
+                    &format!("Device '{}' has been removed from your account", device_name),
+                    crate::ui::notifications::NotificationType::Warning,
+                ) {
+                    error!("Failed to show device removed notification: {}", e);
+                }
+                ctx.request_repaint();
+            }
+        };
+        
+        // Register warning callback (for storage/save limits)
+        let ctx_clone5 = ctx.clone();
+        let warning_callback = {
+            let ctx = ctx_clone5.clone();
+            move |message: String| {
+                info!("Received warning: {}", message);
+                // Show warning notification to user
+                if let Err(e) = crate::ui::notifications::show_notification(
+                    "Storage Warning",
+                    &message,
+                    crate::ui::notifications::NotificationType::Warning,
+                ) {
+                    error!("Failed to show warning notification: {}", e);
+                }
+                ctx.request_repaint();
+            }
+        };
+        
+        // Store callbacks using a separate thread to avoid blocking
+        let ws_handler_clone = ws_handler.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            rt.block_on(async {
+                ws_handler_clone.on_subscription_update(subscription_callback).await;
+                ws_handler_clone.on_usage_update(usage_callback).await;
+                ws_handler_clone.on_device_added(device_added_callback).await;
+                ws_handler_clone.on_device_removed(device_removed_callback).await;
+                ws_handler_clone.on_warning(warning_callback).await;
+            });
+        });
+        
+        self.ws_client = Some(ws_client_clone);
+        self.ws_initialized = true;
+        
+        info!("WebSocket initialization complete");
+    }
+    
     fn fetch_subscription_status(&mut self, ctx: &egui::Context) {
         info!("fetch_subscription_status called, api_client exists: {}", self.api_client.is_some());
         if let Some(ref api_client) = self.api_client {
@@ -1062,6 +1280,25 @@ impl SettingsApp {
     }
     
     fn perform_logout(&mut self, ctx: &egui::Context) {
+        // Disconnect WebSocket if connected
+        if let Some(ref ws_client) = self.ws_client {
+            let ws_client_clone = ws_client.clone();
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async {
+                    if let Err(e) = ws_client_clone.disconnect().await {
+                        error!("Failed to disconnect WebSocket: {}", e);
+                    } else {
+                        info!("WebSocket disconnected");
+                    }
+                });
+            });
+            self.ws_client = None;
+            self.ws_initialized = false;
+            self.ws_subscription_rx = None;
+            self.ws_usage_rx = None;
+        }
+        
         if let Some(ref auth_manager) = self.auth_manager {
             let auth_manager_clone = auth_manager.clone();
             std::thread::spawn(move || {
