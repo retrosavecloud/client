@@ -142,7 +142,7 @@ impl SyncService {
         // Spawn periodic sync task
         let sync_service = self.clone();
         tokio::spawn(async move {
-            let mut sync_interval = interval(Duration::from_secs(300)); // Sync every 5 minutes
+            let mut sync_interval = interval(Duration::from_secs(1800)); // Sync every 30 minutes
             
             loop {
                 sync_interval.tick().await;

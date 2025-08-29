@@ -139,7 +139,8 @@ async fn main() -> Result<()> {
     let audio_feedback_clone = audio_feedback.clone();
     let cmd_sender_hotkey = cmd_sender.clone();
     let hotkey_manager_clone = hotkey_manager.clone();
-    let sync_event_sender_clone = sync_event_sender.clone();
+    let _sync_event_sender_clone = sync_event_sender.clone();
+    let sync_service_clone = sync_service.clone();
     let event_handle = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -164,7 +165,18 @@ async fn main() -> Result<()> {
                             }
                             
                             tray.show_notification("Emulator Detected", &msg);
-                            let _ = tray.send_message(TrayMessage::EmulatorDetected(name)).await;
+                            let _ = tray.send_message(TrayMessage::EmulatorDetected(name.clone())).await;
+                            
+                            // Trigger sync when emulator starts to ensure latest saves
+                            if settings_window_clone.get_settings().cloud_sync_enabled {
+                                info!("Triggering sync on {} start", name);
+                                let sync_service = sync_service_clone.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = sync_service.trigger_sync().await {
+                                        error!("Failed to trigger sync on emulator start: {}", e);
+                                    }
+                                });
+                            }
                         }
                         retrosave::monitor::MonitorEvent::EmulatorStopped(name) => {
                             tray.update_status("Monitoring");
@@ -176,6 +188,17 @@ async fn main() -> Result<()> {
                             
                             tray.show_notification("Emulator Stopped", &format!("{} has stopped", name));
                             let _ = tray.send_message(TrayMessage::EmulatorStopped).await;
+                            
+                            // Trigger sync when emulator stops to ensure all saves are uploaded
+                            if settings_window_clone.get_settings().cloud_sync_enabled {
+                                info!("Triggering sync on {} stop", name);
+                                let sync_service = sync_service_clone.clone();
+                                tokio::spawn(async move {
+                                    if let Err(e) = sync_service.trigger_sync().await {
+                                        error!("Failed to trigger sync on emulator stop: {}", e);
+                                    }
+                                });
+                            }
                         }
                         retrosave::monitor::MonitorEvent::GameDetected(name) => {
                             tray.update_status(&format!("Playing: {}", name));
