@@ -32,6 +32,14 @@ pub fn get_file_size(path: &Path) -> Result<u64> {
     Ok(metadata.len())
 }
 
+/// Calculate SHA256 hash of bytes
+pub fn hash_bytes(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    let result = hasher.finalize();
+    format!("{:x}", result)
+}
+
 /// Check if two files have the same hash
 pub async fn has_file_changed(path: &Path, previous_hash: &str) -> Result<bool> {
     let current_hash = hash_file(path)?;

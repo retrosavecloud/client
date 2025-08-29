@@ -28,6 +28,12 @@ pub struct SaveMetadata {
     pub created_at: DateTime<Utc>,
     pub download_url: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub version: Option<i32>,
+    #[serde(default)]
+    pub game_name: Option<String>,
+    #[serde(default)]
+    pub device_name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]

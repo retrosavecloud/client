@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
         });
     }
     
-    // Create settings window with settings manager and auth manager
+    // Create settings window with settings manager and auth manager (sync service will be added later)
     let settings_window = Arc::new(SettingsWindow::with_auth_manager(
         saved_settings,
         settings_manager.clone(),
@@ -100,6 +100,9 @@ async fn main() -> Result<()> {
         settings.cloud_api_url.clone(),
         Some(data_dir.clone()),
     ));
+    
+    // Set sync service in settings window so it can trigger manual syncs
+    settings_window.set_sync_service(sync_service.clone());
     
     // Start sync service if cloud sync is enabled
     if settings.cloud_sync_enabled {

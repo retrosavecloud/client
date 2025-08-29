@@ -1,7 +1,7 @@
 use anyhow::Result;
 use eframe::egui;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, info, error};
+use tracing::{debug, info, error, warn};
 use tokio::sync::mpsc;
 use crate::storage::SettingsManager;
 use crate::sync::{AuthManager, api::SyncApi, WebSocketClient};
@@ -66,6 +66,7 @@ pub struct SettingsWindow {
     command_sender: mpsc::Sender<SettingsCommand>,
     settings: Arc<Mutex<Settings>>,
     settings_manager: Option<Arc<SettingsManager>>,
+    sync_service: Arc<Mutex<Option<Arc<crate::sync::SyncService>>>>,
 }
 
 impl SettingsWindow {
@@ -80,7 +81,7 @@ impl SettingsWindow {
         
         // Start the settings window in a dedicated thread
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_window(settings_clone, rx, None, None, None) {
+            if let Err(e) = Self::run_window(settings_clone, rx, None, None, None, Arc::new(Mutex::new(None))) {
                 error!("Settings window thread error: {}", e);
             }
         });
@@ -89,6 +90,7 @@ impl SettingsWindow {
             command_sender: tx,
             settings,
             settings_manager: None,
+            sync_service: Arc::new(Mutex::new(None)),
         })
     }
     
@@ -100,7 +102,7 @@ impl SettingsWindow {
         
         // Start the settings window in a dedicated thread
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone, None, None) {
+            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone, None, None, Arc::new(Mutex::new(None))) {
                 error!("Settings window thread error: {}", e);
             }
         });
@@ -109,6 +111,7 @@ impl SettingsWindow {
             command_sender: tx,
             settings,
             settings_manager: Some(settings_manager),
+            sync_service: Arc::new(Mutex::new(None)),
         })
     }
     
@@ -117,11 +120,27 @@ impl SettingsWindow {
         settings_manager: Arc<SettingsManager>,
         auth_manager: Arc<AuthManager>,
     ) -> Result<Self> {
+        Self::with_auth_and_sync(
+            initial_settings,
+            settings_manager,
+            auth_manager,
+            None,
+        )
+    }
+    
+    pub fn with_auth_and_sync(
+        initial_settings: Settings, 
+        settings_manager: Arc<SettingsManager>,
+        auth_manager: Arc<AuthManager>,
+        sync_service: Option<Arc<crate::sync::SyncService>>,
+    ) -> Result<Self> {
         let (tx, rx) = mpsc::channel::<SettingsCommand>(10);
         let settings = Arc::new(Mutex::new(initial_settings.clone()));
         let settings_clone = settings.clone();
         let settings_manager_clone = Some(settings_manager.clone());
         let auth_manager_clone = Some(auth_manager.clone());
+        let sync_service_wrapped = Arc::new(Mutex::new(sync_service.clone()));
+        let sync_service_clone = sync_service_wrapped.clone();
         
         // Create API client
         let api_client = Some(Arc::new(SyncApi::new(
@@ -131,7 +150,7 @@ impl SettingsWindow {
         
         // Start the settings window in a dedicated thread
         std::thread::spawn(move || {
-            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone, auth_manager_clone, api_client) {
+            if let Err(e) = Self::run_window(settings_clone, rx, settings_manager_clone, auth_manager_clone, api_client, sync_service_clone) {
                 error!("Settings window thread error: {}", e);
             }
         });
@@ -140,7 +159,13 @@ impl SettingsWindow {
             command_sender: tx,
             settings,
             settings_manager: Some(settings_manager),
+            sync_service: sync_service_wrapped,
         })
+    }
+    
+    pub fn set_sync_service(&self, sync_service: Arc<crate::sync::SyncService>) {
+        let mut service = self.sync_service.lock().unwrap();
+        *service = Some(sync_service);
     }
     
     fn run_window(
@@ -149,6 +174,7 @@ impl SettingsWindow {
         settings_manager: Option<Arc<SettingsManager>>,
         auth_manager: Option<Arc<AuthManager>>,
         api_client: Option<Arc<SyncApi>>,
+        sync_service: Arc<Mutex<Option<Arc<crate::sync::SyncService>>>>,
     ) -> Result<()> {
         // Wait for the first Show command before creating the window
         let runtime = tokio::runtime::Runtime::new()?;
@@ -254,6 +280,7 @@ impl SettingsWindow {
                         first_show: false, // Already showing
                         settings_manager: settings_manager.clone(),
                         auth_manager: auth_manager.clone(),
+                        sync_service: sync_service.clone(),
                         // Auth state
                         is_authenticated,
                         user_email: user_email.clone(),
@@ -396,6 +423,7 @@ struct SettingsApp {
     first_show: bool,
     settings_manager: Option<Arc<SettingsManager>>,
     auth_manager: Option<Arc<AuthManager>>,
+    sync_service: Arc<Mutex<Option<Arc<crate::sync::SyncService>>>>,
     // Auth state
     is_authenticated: bool,
     user_email: Option<String>,
@@ -747,7 +775,24 @@ impl eframe::App for SettingsApp {
                             ui.add_space(5.0);
                             ui.horizontal(|ui| {
                                 if ui.button("🔄 Sync Now").clicked() {
-                                    info!("Manual sync requested");
+                                    info!("Manual sync requested - triggering sync");
+                                    let sync_service_guard = self.sync_service.lock().unwrap();
+                                    if let Some(ref sync_service) = *sync_service_guard {
+                                        let sync_service = sync_service.clone();
+                                        drop(sync_service_guard);
+                                        std::thread::spawn(move || {
+                                            let rt = tokio::runtime::Runtime::new().unwrap();
+                                            rt.block_on(async {
+                                                if let Err(e) = sync_service.trigger_sync().await {
+                                                    error!("Failed to trigger sync: {}", e);
+                                                } else {
+                                                    info!("Sync triggered successfully");
+                                                }
+                                            });
+                                        });
+                                    } else {
+                                        warn!("Sync service not available");
+                                    }
                                 }
                                 if ui.button("📤 Logout").clicked() {
                                     should_logout = true;

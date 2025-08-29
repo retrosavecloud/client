@@ -9,7 +9,10 @@ use std::collections::{HashMap, VecDeque};
 use sha2::{Sha256, Digest};
 
 use crate::storage::database::Database;
+use crate::storage::save_types::{SaveType, MemoryCardFormat};
+use crate::storage::ps2_memory_card::PS2MemoryCard;
 use super::{AuthManager, SyncApi, EncryptionManager, WebSocketClient, WsMessage};
+use super::api::SaveMetadata;
 
 #[derive(Debug, Clone)]
 pub enum SyncEvent {
@@ -422,9 +425,105 @@ impl SyncService {
         
         info!("Found {} saves in cloud", saves_response.total);
         
+        // DEBUG: Log all saves we received
+        for save in &saves_response.items {
+            let game_name = save.metadata.as_ref()
+                .and_then(|m| m.get("game_name"))
+                .and_then(|g| g.as_str())
+                .unwrap_or("unknown");
+            let version = save.version.unwrap_or(-1) as i64;
+            let has_metadata = save.metadata.as_ref()
+                .and_then(|m| m.get("memory_card_metadata"))
+                .is_some();
+            info!("  Cloud save: {} v{} hash={} has_metadata={} timestamp={}", 
+                game_name, version, &save.file_hash[0..8], has_metadata, save.client_timestamp);
+        }
+        
+        // Group saves by file path to avoid downloading multiple versions of the same file
+        // IMPORTANT: Group by game name + file name to handle old saves without full paths
+        let mut saves_by_path: std::collections::HashMap<String, Vec<SaveMetadata>> = std::collections::HashMap::new();
+        
+        for save in saves_response.items {
+            // Try to determine the logical grouping key
+            // CRITICAL: We must group ALL saves for the same game together!
+            let group_key = if let Some(metadata) = &save.metadata {
+                // Use game name as the primary grouping key to ensure all saves for a game compete
+                if let Some(game_name) = metadata.get("game_name").and_then(|g| g.as_str()) {
+                    // Group by game name - this ensures old and new saves compete
+                    format!("game:{}", game_name)
+                } else if let Some(file_path) = metadata.get("file_path").and_then(|p| p.as_str()) {
+                    // Fall back to file path if no game name
+                    format!("path:{}", file_path)
+                } else {
+                    // Last resort - unique key
+                    format!("unknown_{}", save.id)
+                }
+            } else {
+                // No metadata at all - skip these old saves
+                warn!("Skipping save {} with no metadata at all", save.id);
+                continue;
+            };
+            
+            info!("Grouping save under key '{}': hash={} timestamp={}", 
+                group_key, &save.file_hash[0..8], save.client_timestamp);
+            saves_by_path.entry(group_key).or_default().push(save);
+        }
+        
+        // For each file path, only keep the best save (prefer ones with metadata)
+        let mut newest_saves = Vec::new();
+        info!("Grouped saves into {} unique file paths", saves_by_path.len());
+        for (path, mut saves) in saves_by_path {
+            if saves.len() > 1 {
+                // Sort by:
+                // 1. Prefer saves WITH memory_card_metadata
+                // 2. Then by timestamp descending (newest first)
+                // Log before sorting
+                for (i, save) in saves.iter().enumerate() {
+                    let has_meta = save.metadata.as_ref()
+                        .and_then(|m| m.get("memory_card_metadata"))
+                        .is_some();
+                    let version = save.version.unwrap_or(-1) as i64;
+                    info!("  Before sort #{}: v{} has_metadata={} timestamp={} hash={}", 
+                        i, version, has_meta, save.client_timestamp, &save.file_hash[0..8]);
+                }
+                
+                saves.sort_by(|a, b| {
+                    let a_has_metadata = a.metadata.as_ref()
+                        .and_then(|m| m.get("memory_card_metadata"))
+                        .is_some();
+                    let b_has_metadata = b.metadata.as_ref()
+                        .and_then(|m| m.get("memory_card_metadata"))
+                        .is_some();
+                    
+                    match (a_has_metadata, b_has_metadata) {
+                        (true, false) => std::cmp::Ordering::Less, // a is better
+                        (false, true) => std::cmp::Ordering::Greater, // b is better
+                        _ => b.client_timestamp.cmp(&a.client_timestamp) // both same, use newest
+                    }
+                });
+                
+                let selected = &saves[0];
+                let has_metadata = selected.metadata.as_ref()
+                    .and_then(|m| m.get("memory_card_metadata"))
+                    .is_some();
+                
+                info!("DEBUG: Found {} cloud saves for {}, selected v{} from {} (has_metadata: {}, hash={})", 
+                    saves.len(), path, 
+                    selected.version.unwrap_or(-1),
+                    selected.client_timestamp, 
+                    has_metadata,
+                    &selected.file_hash[0..8]);
+            }
+            if let Some(newest) = saves.into_iter().next() {
+                debug!("Adding save to download: {} from {}", newest.file_hash, newest.client_timestamp);
+                newest_saves.push(newest);
+            }
+        }
+        info!("Will check {} deduplicated saves for download", newest_saves.len());
+        
         // Track downloads
         let mut downloaded = 0;
-        let mut pending_downloads = saves_response.items.len();
+        let mut pending_downloads = newest_saves.len();
         
         // Update pending downloads count
         {
@@ -432,8 +531,8 @@ impl SyncService {
             status.pending_downloads = pending_downloads;
         }
         
-        // Process each cloud save
-        for cloud_save in saves_response.items {
+        // Process each cloud save (now deduplicated by path)
+        for cloud_save in newest_saves {
             // For now, skip saves we can't map to local games
             // In a full implementation, we'd maintain a UUID->i64 mapping
             // or store cloud game IDs in local database
@@ -469,8 +568,211 @@ impl SyncService {
             // Check if we already have this save by hash
             let have_locally = local_saves.iter().any(|s| s.file_hash == cloud_save.file_hash);
             
+            // For memory cards, also check if the actual file hash matches
+            let file_hash_matches = if let Some(metadata) = &cloud_save.metadata {
+                if let Some(file_path) = metadata.get("file_path").and_then(|p| p.as_str()) {
+                    if let Ok(data) = tokio::fs::read(file_path).await {
+                        use sha2::{Sha256, Digest};
+                        let mut hasher = Sha256::new();
+                        hasher.update(&data);
+                        let hash = format!("{:x}", hasher.finalize());
+                        let matches = hash == cloud_save.file_hash;
+                        if !matches {
+                            info!("Memory card hash mismatch - local: {}, cloud: {}", hash, cloud_save.file_hash);
+                        }
+                        matches
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            
+            // Check if the actual file exists on disk and has the specific game save
+            let (file_exists, needs_restore) = if let Some(metadata) = &cloud_save.metadata {
+                if let Some(file_path) = metadata.get("file_path").and_then(|p| p.as_str()) {
+                    if tokio::fs::metadata(file_path).await.is_ok() {
+                        // File exists, check if it has the actual game saves
+                        let emulator = metadata.get("emulator")
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("");
+                        
+                        let save_type = SaveType::detect(&std::path::PathBuf::from(file_path), emulator);
+                        
+                        if let SaveType::MemoryCard { format, .. } = save_type {
+                            // Read file and check content
+                            if let Ok(data) = tokio::fs::read(file_path).await {
+                                match format {
+                                    MemoryCardFormat::PS2 => {
+                                        // Parse PS2 memory card to check for game saves
+                                        if let Some(card) = PS2MemoryCard::new(data.clone()) {
+                                            let game_name = metadata.get("game_name")
+                                                .and_then(|g| g.as_str())
+                                                .unwrap_or("Harry Potter");
+                                            
+                                            // Generate metadata for safety checks
+                                            let local_metadata = card.generate_metadata(game_name.to_string());
+                                            
+                                            // Check if we have the specific game save
+                                            let has_game_save = card.has_game_saves(game_name) || 
+                                                               card.has_harry_potter_save();
+                                            
+                                            // SAFETY CHECK: If we have OTHER games, be careful
+                                            if local_metadata.games_contained.len() > 1 {
+                                                // Parse cloud metadata if available
+                                                let cloud_metadata = metadata.get("memory_card_metadata")
+                                                    .and_then(|m| serde_json::from_value::<retrosave_shared::MemoryCardMetadata>(m.clone()).ok());
+                                                
+                                                if let Some(cloud_meta) = cloud_metadata {
+                                                    // Analyze conflicts
+                                                    use crate::sync::conflict_resolution::{ConflictAnalyzer, ResolutionStrategy};
+                                                    
+                                                    let local_hash = crate::storage::hasher::hash_bytes(&data);
+                                                    let cloud_hash = cloud_save.file_hash.clone();
+                                                    let local_time = chrono::Utc::now(); // Should get actual file time
+                                                    let cloud_time = cloud_save.client_timestamp;
+                                                    
+                                                    let conflicts = ConflictAnalyzer::analyze_memory_card_conflicts(
+                                                        &local_metadata,
+                                                        &cloud_meta,
+                                                        &local_hash,
+                                                        &cloud_hash,
+                                                        local_time,
+                                                        cloud_time,
+                                                    );
+                                                    
+                                                    if !conflicts.is_empty() {
+                                                        warn!("Found {} conflicts in memory card", conflicts.len());
+                                                        for conflict in &conflicts {
+                                                            warn!("  - {} ({}): {:?}", 
+                                                                conflict.game_name, 
+                                                                conflict.game_id,
+                                                                conflict.conflict_type
+                                                            );
+                                                        }
+                                                        
+                                                        // For now, use smart strategy (can be made interactive later)
+                                                        let resolution = ConflictAnalyzer::resolve_conflicts(
+                                                            &conflicts,
+                                                            ResolutionStrategy::Smart,
+                                                        );
+                                                        
+                                                        info!("Conflict resolution: {} local, {} cloud, {} merged",
+                                                            resolution.games_kept_local.len(),
+                                                            resolution.games_kept_cloud.len(),
+                                                            resolution.games_merged.len()
+                                                        );
+                                                        
+                                                        // If we're keeping any local games, don't overwrite
+                                                        if !resolution.games_kept_local.is_empty() {
+                                                            warn!("Keeping local games, skipping download to prevent data loss");
+                                                            (true, false) // Don't download
+                                                        } else {
+                                                            (true, true) // Safe to download
+                                                        }
+                                                    } else {
+                                                        // No conflicts, safe to proceed
+                                                        if !has_game_save {
+                                                            info!("Memory card exists but doesn't have {} saves", game_name);
+                                                            (true, true) // Exists but needs restore
+                                                        } else {
+                                                            debug!("Memory card has {} saves", game_name);
+                                                            (true, false) // Has saves, don't need restore
+                                                        }
+                                                    }
+                                                } else {
+                                                    // No cloud metadata (old save format)
+                                                    // Check if we should allow download for migration
+                                                    let allow_migration = {
+                                                        // Allow if memory card is mostly empty
+                                                        let empty_games = local_metadata.games_contained.iter()
+                                                            .filter(|g| g.save_count == 0)
+                                                            .count();
+                                                        let total_games = local_metadata.games_contained.len();
+                                                        
+                                                        // If most games are empty, allow migration
+                                                        if empty_games > total_games / 2 {
+                                                            info!("Memory card is mostly empty ({}/{} empty), allowing migration from old cloud save", 
+                                                                empty_games, total_games);
+                                                            true
+                                                        } else if !has_game_save && local_metadata.games_contained.len() <= 5 {
+                                                            // If we don't have this specific game and there are few games
+                                                            info!("Memory card missing {} and has few games ({}), allowing migration",
+                                                                game_name, local_metadata.games_contained.len());
+                                                            true
+                                                        } else {
+                                                            warn!("No cloud metadata available, being cautious with {} games. Consider clearing memory card for migration.", 
+                                                                local_metadata.games_contained.len());
+                                                            false
+                                                        }
+                                                    };
+                                                    
+                                                    if allow_migration && !has_game_save {
+                                                        (true, true) // Allow restore for migration
+                                                    } else {
+                                                        (true, false) // Don't download without metadata
+                                                    }
+                                                }
+                                            } else {
+                                                // Single game or empty, safe to proceed
+                                                if !has_game_save {
+                                                    info!("Memory card exists but doesn't have {} saves", game_name);
+                                                    (true, true) // Exists but needs restore
+                                                } else {
+                                                    debug!("Memory card has {} saves", game_name);
+                                                    (true, false) // Has saves, don't need restore
+                                                }
+                                            }
+                                        } else {
+                                            info!("Invalid PS2 memory card format");
+                                            (true, true) // Invalid, needs restore
+                                        }
+                                    },
+                                    _ => {
+                                        // For other formats, use simple empty check
+                                        let is_empty = format.is_empty(&data);
+                                        if is_empty {
+                                            info!("Memory card exists but is empty: {}", file_path);
+                                        }
+                                        (true, is_empty)
+                                    }
+                                }
+                            } else {
+                                (true, false)
+                            }
+                        } else {
+                            (true, false)
+                        }
+                    } else {
+                        (false, true) // Doesn't exist, needs restore
+                    }
+                } else {
+                    (false, true)
+                }
+            } else {
+                (false, true)
+            };
+            
             // Download based on conflict resolution strategy
-            let should_download = if have_locally {
+            // For memory cards: respect the safety checks from above
+            let should_download = if !file_hash_matches && needs_restore {
+                // Only download if safety checks passed
+                info!("Will download save - hash mismatch and safety checks passed, path: {:?}", 
+                    cloud_save.metadata.as_ref()
+                        .and_then(|m| m.get("file_path"))
+                        .and_then(|p| p.as_str()));
+                true
+            } else if !file_exists || needs_restore {
+                info!("Will download save - exists: {}, needs_restore: {}, path: {:?}", 
+                    file_exists, needs_restore,
+                    cloud_save.metadata.as_ref()
+                        .and_then(|m| m.get("file_path"))
+                        .and_then(|p| p.as_str()));
+                true
+            } else if have_locally {
                 match self.conflict_strategy {
                     ConflictResolutionStrategy::CloudFirst => true,
                     ConflictResolutionStrategy::LocalFirst => false,
@@ -499,6 +801,7 @@ impl SyncService {
                     // Download the save data
                     match self.api.download_save_data(&download_url).await {
                         Ok(compressed_data) => {
+                            info!("Downloaded {} compressed bytes from S3", compressed_data.len());
                             // Decompress the data
                             match zstd::decode_all(compressed_data.as_slice()) {
                                 Ok(decompressed_data) => {
@@ -550,6 +853,13 @@ impl SyncService {
                                             if let Some(parent) = path.parent() {
                                                 tokio::fs::create_dir_all(parent).await.ok();
                                             }
+                                            
+                                            // Debug: Log data size and first bytes
+                                            info!("Writing {} bytes to {}", final_data.len(), original_path);
+                                            if final_data.len() > 0 {
+                                                debug!("First 16 bytes: {:?}", &final_data[..16.min(final_data.len())]);
+                                            }
+                                            
                                             if let Err(e) = tokio::fs::write(&path, &final_data).await {
                                                 warn!("Failed to write save file {}: {}", original_path, e);
                                             } else {

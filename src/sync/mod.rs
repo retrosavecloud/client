@@ -5,6 +5,7 @@ pub mod encryption;
 pub mod websocket;
 pub mod event_handler;
 pub mod message_throttler;
+pub mod conflict_resolution;
 
 pub use auth::AuthManager;
 pub use api::SyncApi;

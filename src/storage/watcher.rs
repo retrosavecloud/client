@@ -10,14 +10,18 @@ use tracing::{debug, error, info, warn};
 use super::hasher::{hash_file, get_file_size};
 use super::compression::{Compressor, CompressionStats};
 use super::Database;
+use super::save_types::{SaveType, MemoryCardFormat};
 
 #[derive(Debug, Clone)]
 pub struct SaveEvent {
     pub game_name: String,
+    pub game_id: Option<String>,  // Console-specific ID (e.g., SLES-52056)
     pub emulator: String,
     pub file_path: PathBuf,
     pub file_hash: String,
     pub file_size: u64,
+    pub save_type: SaveType,
+    pub is_empty: bool,  // For memory cards, indicates if it's empty
 }
 
 pub struct SaveWatcher {
@@ -28,6 +32,7 @@ pub struct SaveWatcher {
     sender: mpsc::Sender<SaveEvent>,
     current_game_name: Arc<RwLock<Option<String>>>,
     last_event_times: Arc<Mutex<HashMap<PathBuf, Instant>>>,
+    memory_card_tracker: Arc<Mutex<crate::storage::memory_card_tracker::MemoryCardTracker>>,
 }
 
 impl SaveWatcher {
@@ -45,6 +50,7 @@ impl SaveWatcher {
             sender,
             current_game_name: Arc::new(RwLock::new(None)),
             last_event_times: Arc::new(Mutex::new(HashMap::new())),
+            memory_card_tracker: Arc::new(Mutex::new(crate::storage::memory_card_tracker::MemoryCardTracker::new())),
         };
         
         Ok((watcher, receiver))
@@ -82,13 +88,52 @@ impl SaveWatcher {
                                 })
                             };
                             
+                            // Detect save type and check if empty
+                            let emulator_name = "PCSX2";
+                            let mut save_type = SaveType::detect(path, emulator_name);
+                            let mut is_empty = false;
+                            
+                            if let SaveType::MemoryCard { ref mut format, ref mut contains_saves, ref mut save_count } = save_type {
+                                // Read file to check if it's empty
+                                if let Ok(data) = tokio::fs::read(path).await {
+                                    is_empty = format.is_empty(&data);
+                                    *contains_saves = !is_empty;
+                                    *save_count = format.count_saves(&data);
+                                    
+                                    if is_empty {
+                                        info!("Skipping empty memory card in check_file: {:?}", path);
+                                        return Ok(0); // Skip empty memory cards, return 0 as file size
+                                    }
+                                }
+                            }
+                            
+                            // Extract game_id from PS2 memory cards
+                            let game_id = if path.extension().map_or(false, |e| e == "ps2") {
+                                if let Ok(data) = tokio::fs::read(path).await {
+                                    if let Some(card) = crate::storage::ps2_memory_card::PS2MemoryCard::new(data) {
+                                        let saves = card.parse_saves();
+                                        // Get the first game ID we find
+                                        saves.values().next().map(|save| save.game_id.clone())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            
                             // Send save event
                             let _ = self.sender.send(SaveEvent {
                                 file_path: path.clone(),
                                 file_hash: new_hash,
                                 file_size: std::fs::metadata(path)?.len(),
                                 game_name,
-                                emulator: "PCSX2".to_string(),
+                                game_id,
+                                emulator: emulator_name.to_string(),
+                                save_type,
+                                is_empty,
                             }).await;
                         }
                     }
@@ -118,6 +163,7 @@ impl SaveWatcher {
         let save_dir = self.save_dir.clone();
         let current_game_name = self.current_game_name.clone();
         let last_event_times = self.last_event_times.clone();
+        let memory_card_tracker = self.memory_card_tracker.clone();
         
         // Spawn handler for file events
         tokio::spawn(async move {
@@ -129,6 +175,7 @@ impl SaveWatcher {
                     &save_dir,
                     &current_game_name,
                     &last_event_times,
+                    &memory_card_tracker,
                 ).await {
                     error!("Error handling file event: {}", e);
                 }
@@ -172,6 +219,7 @@ impl SaveWatcher {
         save_dir: &Path,
         current_game_name: &Arc<RwLock<Option<String>>>,
         last_event_times: &Arc<Mutex<HashMap<PathBuf, Instant>>>,
+        memory_card_tracker: &Arc<Mutex<crate::storage::memory_card_tracker::MemoryCardTracker>>,
     ) -> Result<()> {
         const DEBOUNCE_DURATION: Duration = Duration::from_secs(3); // 3 seconds to group PCSX2's multiple writes during save
         
@@ -202,42 +250,161 @@ impl SaveWatcher {
                             }
                         };
                         
-                        // Check if file actually changed
-                        let mut hashes = file_hashes.lock().await;
-                        if let Some(old_hash) = hashes.get(&path) {
-                            if old_hash == &hash {
-                                debug!("File unchanged (same hash): {:?}", path);
-                                // Update debounce time even for unchanged files
-                                last_times.insert(path.clone(), now);
-                                continue;
-                            }
-                        }
-                        
-                        // Update hash and debounce time
-                        hashes.insert(path.clone(), hash.clone());
-                        last_times.insert(path.clone(), now);
-                        
                         // Get file size
                         let file_size = get_file_size(&path).unwrap_or(0);
                         
-                        // Get current game name or fallback to extraction
-                        let game_name = {
+                        // For PS2 memory cards, use the memory card tracker which can detect
+                        // individual save changes even when the overall file hash is the same
+                        let (should_process, detected_game) = if path.extension().map_or(false, |e| e == "ps2") {
+                            // For PS2 memory cards, check if the file actually changed
+                            let mut hashes = file_hashes.lock().await;
+                            let file_changed = if let Some(old_hash) = hashes.get(&path) {
+                                old_hash != &hash
+                            } else {
+                                true // First time seeing this file
+                            };
+                            
+                            if !file_changed {
+                                debug!("Memory card unchanged (same hash): {:?}", path);
+                                (false, None)
+                            } else if let Ok(data) = tokio::fs::read(&path).await {
+                                // File changed, update hash
+                                hashes.insert(path.clone(), hash.clone());
+                                
+                                // Check if memory card is empty
+                                if let Some(card) = crate::storage::ps2_memory_card::PS2MemoryCard::new(data.clone()) {
+                                    let saves = card.parse_saves();
+                                    if saves.is_empty() {
+                                        info!("Memory card is empty, skipping upload: {:?}", path);
+                                        (false, None)
+                                    } else {
+                                        // Update tracker and get the changed game
+                                        let mut tracker = memory_card_tracker.lock().await;
+                                        let changed_game = tracker.update(&path, &data);
+                                        
+                                        info!("Memory card has {} saves, processing: {:?}", saves.len(), path);
+                                        // Use detected game or get first game from saves
+                                        let game = changed_game.or_else(|| {
+                                            saves.values().next().map(|s| s.game_id.clone())
+                                        });
+                                        (true, game)
+                                    }
+                                } else {
+                                    warn!("Invalid PS2 memory card format, skipping: {:?}", path);
+                                    (false, None)
+                                }
+                            } else {
+                                (false, None)
+                            }
+                        } else {
+                            // For non-memory card files, check if file hash changed
+                            let mut hashes = file_hashes.lock().await;
+                            let changed = if let Some(old_hash) = hashes.get(&path) {
+                                if old_hash == &hash {
+                                    debug!("File unchanged (same hash): {:?}", path);
+                                    false
+                                } else {
+                                    true
+                                }
+                            } else {
+                                true // First time seeing this file
+                            };
+                            
+                            if changed {
+                                hashes.insert(path.clone(), hash.clone());
+                            }
+                            
+                            (changed, None)
+                        };
+                        
+                        // Skip if no changes detected
+                        if !should_process {
+                            // Don't update debounce time for unchanged files - this prevents infinite debouncing
+                            continue;
+                        }
+                        
+                        // Update debounce time only when file actually changed
+                        last_times.insert(path.clone(), now);
+                        
+                        // Get game name from memory card content using game database
+                        let game_name = if let Some(detected) = detected_game {
+                            // Memory card tracker already detected which game changed
+                            // Get the current game from window title detection
+                            let current_game = current_game_name.read().await.clone();
+                            
+                            // Look up the game name for the detected game ID
+                            let detected_game_name = crate::storage::game_database::lookup_game_name(&detected)
+                                .unwrap_or_else(|| detected.clone());
+                            
+                            // If we have a current game from window title, verify it matches
+                            if let Some(current) = current_game {
+                                // Check if the detected game matches the current window
+                                if detected_game_name.to_lowercase().contains(&current.to_lowercase()) || 
+                                   current.to_lowercase().contains(&detected_game_name.to_lowercase()) {
+                                    detected_game_name
+                                } else {
+                                    // Use current game since user is actively playing it
+                                    info!("Memory card shows {} changed but current game is {}, using current", 
+                                          detected_game_name, current);
+                                    current
+                                }
+                            } else {
+                                detected_game_name
+                            }
+                        } else {
+                            // For non-PS2 saves, use the old approach for now
                             let current = current_game_name.read().await;
                             current.clone().unwrap_or_else(|| {
                                 Self::extract_game_name(&path, save_dir)
                             })
                         };
                         
+                        // Detect save type
+                        // TODO: Get actual emulator name from context
+                        let emulator_name = "PCSX2"; // For now, hardcoded
+                        let mut save_type = SaveType::detect(&path, emulator_name);
+                        
+                        // Check if memory card is empty
+                        let mut is_empty = false;
+                        if let SaveType::MemoryCard { ref mut format, ref mut contains_saves, ref mut save_count } = save_type {
+                            // Read file to check if it's empty
+                            if let Ok(data) = tokio::fs::read(&path).await {
+                                is_empty = format.is_empty(&data);
+                                *contains_saves = !is_empty;
+                                *save_count = format.count_saves(&data);
+                                
+                                if is_empty {
+                                    info!("Skipping empty memory card: {:?}", path);
+                                    continue; // Skip empty memory cards
+                                }
+                            }
+                        }
+                        
+                        // Extract game_id if we detected it
+                        let detected_game_id = if path.extension().map_or(false, |e| e == "ps2") {
+                            // Get the game_id we detected earlier
+                            memory_card_tracker.lock().await
+                                .previous_states
+                                .get(&path)
+                                .and_then(|state| state.saves.values().next())
+                                .map(|save| save.game_id.clone())
+                        } else {
+                            None
+                        };
+                        
                         // Send save event
                         let event = SaveEvent {
                             game_name,
-                            emulator: "PCSX2".to_string(),
+                            game_id: detected_game_id,
+                            emulator: emulator_name.to_string(),
                             file_path: path.clone(),
                             file_hash: hash,
                             file_size,
+                            save_type,
+                            is_empty,
                         };
                         
-                        info!("Detected save: {} ({} bytes)", path.display(), file_size);
+                        info!("Detected save: {} ({} bytes, empty: {})", path.display(), file_size, is_empty);
                         let _ = sender.send(event).await;
                     }
                 }

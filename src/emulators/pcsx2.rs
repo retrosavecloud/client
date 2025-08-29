@@ -46,13 +46,11 @@ impl Emulator for PCSX2 {
     }
     
     fn get_current_game(&self) -> Option<String> {
-        if let Some(pid) = self.pid {
-            // Try to get the actual game name from window title
-            if let Some(game_name) = crate::monitor::process::get_pcsx2_game_name(pid) {
-                return Some(game_name);
-            }
-            // Fallback to generic name if we can't get the actual title
-            Some("Unknown PS2 Game".to_string())
+        // We no longer use window titles for game detection
+        // Game names are now detected from memory card content using the game database
+        // This prevents issues with pause screens, menus, etc. being saved as different games
+        if self.pid.is_some() {
+            Some("PS2 Game".to_string()) // Generic placeholder - actual game detected from memory card
         } else {
             None
         }

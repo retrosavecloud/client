@@ -125,8 +125,14 @@ pub async fn start_monitoring_with_sync(
             while let Ok(save_event) = receiver.try_recv() {
                 info!("Save detected: {} - {}", save_event.game_name, save_event.file_path.display());
                 
-                // Record save in database
-                match database.get_or_create_game(&save_event.game_name, &save_event.emulator).await {
+                // Record save in database with game_id if available
+                let game_result = if let Some(ref game_id) = save_event.game_id {
+                    database.get_or_create_game_with_id(&save_event.game_name, &save_event.emulator, Some(game_id)).await
+                } else {
+                    database.get_or_create_game(&save_event.game_name, &save_event.emulator).await
+                };
+                
+                match game_result {
                     Ok(game) => {
                         // Record the save
                         match database.record_save(

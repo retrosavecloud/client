@@ -10,6 +10,7 @@ pub struct Game {
     pub id: i64,
     pub name: String,
     pub emulator: String,
+    pub game_id: Option<String>,  // Console-specific ID (e.g., SLES-52056)
     pub path: Option<String>,
     pub last_played: Option<DateTime<Utc>>,
     pub total_saves: i32,
@@ -85,6 +86,7 @@ impl Database {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 emulator TEXT NOT NULL,
+                game_id TEXT,  -- PS2: SLES-12345, PSP: ULUS10041, etc.
                 path TEXT,
                 last_played DATETIME,
                 total_saves INTEGER DEFAULT 0,
@@ -115,6 +117,11 @@ impl Database {
         )
         .execute(&self.pool)
         .await?;
+        
+        // Add game_id column if it doesn't exist (migration for existing DBs)
+        let _ = sqlx::query("ALTER TABLE games ADD COLUMN game_id TEXT")
+            .execute(&self.pool)
+            .await; // Ignore error if column already exists
 
         // Create settings table
         sqlx::query(
@@ -144,20 +151,37 @@ impl Database {
 
     /// Get or create a game entry
     pub async fn get_or_create_game(&self, name: &str, emulator: &str) -> Result<Game> {
+        self.get_or_create_game_with_id(name, emulator, None).await
+    }
+    
+    pub async fn get_or_create_game_with_id(&self, name: &str, emulator: &str, game_id: Option<&str>) -> Result<Game> {
         // Try to get existing game
-        let existing = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<DateTime<Utc>>, i32)>(
-            "SELECT id, name, emulator, path, last_played, total_saves FROM games WHERE name = ? AND emulator = ?"
+        let existing = sqlx::query_as::<_, (i64, String, String, Option<String>, Option<String>, Option<DateTime<Utc>>, i32)>(
+            "SELECT id, name, emulator, game_id, path, last_played, total_saves FROM games WHERE name = ? AND emulator = ?"
         )
         .bind(name)
         .bind(emulator)
         .fetch_optional(&self.pool)
         .await?;
 
-        if let Some((id, name, emulator, path, last_played, total_saves)) = existing {
+        if let Some((id, name, emulator, existing_game_id, path, last_played, total_saves)) = existing {
+            // Update game_id if provided and not already set
+            let final_game_id = if existing_game_id.is_none() && game_id.is_some() {
+                sqlx::query("UPDATE games SET game_id = ? WHERE id = ?")
+                    .bind(game_id)
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+                game_id.map(String::from)
+            } else {
+                existing_game_id
+            };
+            
             return Ok(Game {
                 id,
                 name,
                 emulator,
+                game_id: final_game_id,
                 path,
                 last_played,
                 total_saves,
@@ -166,20 +190,22 @@ impl Database {
 
         // Create new game
         let id = sqlx::query(
-            "INSERT INTO games (name, emulator) VALUES (?, ?)"
+            "INSERT INTO games (name, emulator, game_id) VALUES (?, ?, ?)"
         )
         .bind(name)
         .bind(emulator)
+        .bind(game_id)
         .execute(&self.pool)
         .await?
         .last_insert_rowid();
 
-        info!("Created new game: {} ({})", name, emulator);
+        info!("Created new game: {} ({}) with ID: {:?}", name, emulator, game_id);
 
         Ok(Game {
             id,
             name: name.to_string(),
             emulator: emulator.to_string(),
+            game_id: game_id.map(String::from),
             path: None,
             last_played: None,
             total_saves: 0,
@@ -326,7 +352,7 @@ impl Database {
     /// Get all games
     pub async fn get_all_games(&self) -> Result<Vec<Game>> {
         let games = sqlx::query(
-            "SELECT id, name, emulator, path, last_played, total_saves FROM games ORDER BY last_played DESC"
+            "SELECT id, name, emulator, game_id, path, last_played, total_saves FROM games ORDER BY last_played DESC"
         )
         .fetch_all(&self.pool)
         .await?
@@ -335,9 +361,10 @@ impl Database {
             id: row.get(0),
             name: row.get(1),
             emulator: row.get(2),
-            path: row.get(3),
-            last_played: row.get(4),
-            total_saves: row.get(5),
+            game_id: row.get(3),
+            path: row.get(4),
+            last_played: row.get(5),
+            total_saves: row.get(6),
         })
         .collect();
 
