@@ -14,7 +14,7 @@ Open-source client for Retrosave - automatic save management for retro game emul
 
 ## Installation
 
-See [Releases](https://github.com/retrosave/retrosave-client/releases) for pre-built binaries.
+See [Releases](https://github.com/retrosavecloud/client/releases) for pre-built binaries.
 
 ### Build from Source
 

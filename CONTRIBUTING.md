@@ -10,4 +10,4 @@ Thank you for your interest in contributing to Retrosave!
 4. Test thoroughly
 5. Submit a PR to `develop` branch
 
-See full guidelines at [CONTRIBUTING.md](https://github.com/bulpara/retrosave-client/blob/develop/CONTRIBUTING.md)
+See full guidelines at [CONTRIBUTING.md](https://github.com/retrosavecloud/client/blob/develop/CONTRIBUTING.md)
