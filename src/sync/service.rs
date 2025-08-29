@@ -303,17 +303,33 @@ impl SyncService {
             
             debug!("Processing upload: {} for {}", task.game_name, task.emulator);
             
+            // Read file data first to extract game_id for PS2 memory cards
+            let data = tokio::fs::read(&task.file_path).await
+                .context("Failed to read save file")?;
+            
+            // Extract game_id - just look it up from our database using the game name!
+            let extracted_game_id = if task.emulator.to_lowercase() == "pcsx2" {
+                // Simply look up the game ID by the window title name
+                let game_id = crate::storage::game_database::lookup_game_id_by_name(&task.game_name);
+                
+                if let Some(ref id) = game_id {
+                    info!("Found game_id {} for '{}' in database", id, task.game_name);
+                } else {
+                    warn!("Could not find game_id for '{}' in database", task.game_name);
+                }
+                
+                game_id
+            } else {
+                None
+            };
+            
             // Get or register game with cloud (returns UUID)
-            let cloud_game_id = self.get_or_register_game(&task.game_name, &task.emulator).await?;
+            let cloud_game_id = self.get_or_register_game_with_id(&task.game_name, &task.emulator, extracted_game_id.clone()).await?;
             
             // Also ensure we have a local game record
             let local_game = self.database
                 .get_or_create_game(&task.game_name, &task.emulator)
                 .await?;
-            
-            // Read file data
-            let data = tokio::fs::read(&task.file_path).await
-                .context("Failed to read save file")?;
             
             // Optionally encrypt before compression
             let processed_data = {
@@ -349,6 +365,7 @@ impl SyncService {
                         "file_path": task.file_path.clone(),
                         "game_name": task.game_name.clone(),
                         "emulator": task.emulator.clone(),
+                        "game_id": extracted_game_id.clone(),
                     }))
                 )
                 .await {
@@ -915,18 +932,23 @@ impl SyncService {
     
     /// Get or register a game
     async fn get_or_register_game(&self, name: &str, emulator: &str) -> Result<Uuid> {
+        self.get_or_register_game_with_id(name, emulator, None).await
+    }
+    
+    /// Get or register a game with optional game_id
+    async fn get_or_register_game_with_id(&self, name: &str, emulator: &str, game_id: Option<String>) -> Result<Uuid> {
         let cache_key = format!("{}:{}", name, emulator);
         
         // Check cache
         {
             let cache = self.game_cache.read().await;
-            if let Some(game_id) = cache.get(&cache_key) {
-                return Ok(*game_id);
+            if let Some(cached_id) = cache.get(&cache_key) {
+                return Ok(*cached_id);
             }
         }
         
         // Register with API
-        let game = self.api.register_game(name, emulator).await?;
+        let game = self.api.register_game_with_id(name, emulator, game_id).await?;
         
         // Update cache
         {

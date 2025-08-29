@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use crate::storage::game_database::lookup_game_name;
 use retrosave_shared::{MemoryCardMetadata, GameInfo};
 use chrono::{NaiveDate, NaiveTime, NaiveDateTime, Utc};
+use tracing::debug;
 
 /// PS2 Memory Card Parser
 /// 
@@ -211,36 +212,49 @@ impl PS2MemoryCard {
     }
     
     fn extract_game_id(&self, name: &str) -> String {
-        // PS2 game IDs are typically in format BASLUS-12345 or BESLES-12345
-        // Try to extract it from the save name
+        // Save names typically start with B prefix + game serial
+        // BESLES-52563FIFA05 -> extract SLES-52563
+        // The game creates the save with a 'B' prefix (B+SLES becomes BESLES)
         
-        // Common prefixes
+        debug!("Extracting game_id from save name: {}", name);
+        
+        // Remove the B prefix if present to get actual game serial
+        let clean_name = if name.starts_with("BE") || name.starts_with("BA") {
+            &name[1..]
+        } else {
+            name
+        };
+        
+        // Common prefixes (after potentially removing B)
         let prefixes = vec![
-            "BASLUS-", "BESLES-", "BASLES-", "BESLUS-",
-            "SLES-", "SLUS-", "SCES-", "SCUS-",
-            "SLPM-", "SLPS-", "SCPS-"
+            "ESLUS-", "ESLES-", "ASLES-", "ASLUS-",  // After removing B
+            "SLUS-", "SLES-", "SCES-", "SCUS-",      // Direct prefixes
+            "SLPM-", "SLPS-", "SCPS-", "SLKA-"
         ];
         
         for prefix in prefixes {
-            if let Some(pos) = name.find(prefix) {
+            if let Some(pos) = clean_name.find(prefix) {
                 let start = pos;
                 let mut end = start + prefix.len();
                 
                 // Read the numeric part (usually 5 digits)
-                while end < name.len() && end < start + prefix.len() + 5 {
-                    if !name.chars().nth(end).unwrap_or(' ').is_ascii_digit() {
+                while end < clean_name.len() && end < start + prefix.len() + 5 {
+                    if !clean_name.chars().nth(end).unwrap_or(' ').is_ascii_digit() {
                         break;
                     }
                     end += 1;
                 }
                 
                 if end > start + prefix.len() {
-                    return name[start..end].to_string();
+                    let game_id = clean_name[start..end].to_string();
+                    debug!("Extracted game_id: {}", game_id);
+                    return game_id;
                 }
             }
         }
         
-        // If no standard game ID found, use the whole name
+        // If no standard game ID found, return the whole name
+        debug!("Could not extract game_id, using full name: {}", name);
         name.to_string()
     }
     

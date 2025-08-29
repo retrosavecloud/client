@@ -216,6 +216,27 @@ pub fn is_game_id_for_name(game_id: &str, game_name: &str) -> bool {
     }
 }
 
+/// Look up a game ID by its name (e.g., "FIFA Football 2005" -> "SLES-52563")
+/// 
+/// This is the REVERSE of lookup_game_name - finds the ID from the name
+pub fn lookup_game_id_by_name(game_name: &str) -> Option<String> {
+    // Try the auto-generated database first (12,000+ games)
+    for (id, name) in generated::GAME_DATABASE_GENERATED.iter() {
+        if name.eq_ignore_ascii_case(game_name) {
+            return Some(id.to_string());
+        }
+    }
+    
+    // Fallback to hardcoded database
+    for (id, name) in GAME_DATABASE.iter() {
+        if name.eq_ignore_ascii_case(game_name) {
+            return Some(id.to_string());
+        }
+    }
+    
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

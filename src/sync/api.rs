@@ -40,6 +40,7 @@ pub struct SaveMetadata {
 pub struct RegisterGameRequest {
     pub name: String,
     pub emulator: String,
+    pub game_id: Option<String>,  // Console-specific game ID (e.g., SLUS-20552)
 }
 
 #[derive(Debug, Serialize)]
@@ -128,6 +129,11 @@ impl SyncApi {
 
     /// Register a new game or get existing one
     pub async fn register_game(&self, name: &str, emulator: &str) -> Result<Game> {
+        self.register_game_with_id(name, emulator, None).await
+    }
+    
+    /// Register a new game or get existing one with optional game_id
+    pub async fn register_game_with_id(&self, name: &str, emulator: &str, game_id: Option<String>) -> Result<Game> {
         let token = self.auth_manager.get_access_token().await
             .context("Not authenticated")?;
 
@@ -137,6 +143,7 @@ impl SyncApi {
             .json(&RegisterGameRequest {
                 name: name.to_string(),
                 emulator: emulator.to_string(),
+                game_id,
             })
             .send()
             .await
