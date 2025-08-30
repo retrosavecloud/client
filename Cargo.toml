@@ -31,7 +31,7 @@ sha2 = "0.10"
 hex = "0.4"
 uuid = { version = "1.11", features = ["v4", "serde"] }
 aes-gcm = "0.10"
-argon2 = "0.5"
+argon2 = { version = "0.5", default-features = false, features = ["std"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
@@ -78,7 +78,7 @@ dirs = "5.0"
 
 # Security
 # keyring removed - using file-based storage
-base64 = "0.22"
+base64 = "0.21"
 rand = "0.8"
 gethostname = "0.5"
 open = "5.3.2"
