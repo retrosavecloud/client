@@ -50,7 +50,7 @@ impl PS2MemoryCard {
     
     /// Parse saves by reading the proper directory structure
     pub fn parse_saves(&self) -> HashMap<String, PS2Save> {
-        let mut saves = HashMap::new();
+        let saves = HashMap::new();
         
         // Read superblock to get root directory cluster (at offset 0x3C)
         if self.data.len() < 0x40 {

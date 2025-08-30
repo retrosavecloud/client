@@ -49,7 +49,7 @@ pub struct SystemTray {
 impl SystemTray {
     pub fn new() -> Result<(Self, mpsc::Receiver<TrayMessage>)> {
         let (sender, receiver) = mpsc::channel(100);
-        let (control_sender, control_receiver) = mpsc::channel(100);
+        let (control_sender, mut control_receiver) = mpsc::channel(100);
         
         // Clone for the tray thread
         let sender_clone = sender.clone();

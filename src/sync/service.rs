@@ -327,7 +327,7 @@ impl SyncService {
             let cloud_game_id = self.get_or_register_game_with_id(&task.game_name, &task.emulator, extracted_game_id.clone()).await?;
             
             // Also ensure we have a local game record
-            let local_game = self.database
+            let _local_game = self.database
                 .get_or_create_game(&task.game_name, &task.emulator)
                 .await?;
             
