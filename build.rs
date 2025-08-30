@@ -70,13 +70,13 @@ fn generate_game_database() {
     
     writeln!(output, "// Auto-generated from GameIndex.yaml").unwrap();
     writeln!(output, "// Total games: {}", games.len()).unwrap();
-    writeln!(output, "").unwrap();
+    writeln!(output).unwrap();
     writeln!(output, "use std::collections::HashMap;").unwrap();
     writeln!(output, "use once_cell::sync::Lazy;").unwrap();
-    writeln!(output, "").unwrap();
+    writeln!(output).unwrap();
     writeln!(output, "pub static GAME_DATABASE_GENERATED: Lazy<HashMap<&'static str, &'static str>> = Lazy::new(|| {{").unwrap();
     writeln!(output, "    let mut db = HashMap::new();").unwrap();
-    writeln!(output, "").unwrap();
+    writeln!(output).unwrap();
     
     // Sort games by ID for consistent output
     let mut sorted_games: Vec<_> = games.iter().collect();
@@ -87,10 +87,10 @@ fn generate_game_database() {
         let escaped_name = name
             .replace('\\', "\\\\")
             .replace('"', "\\\"");
-        writeln!(output, "    db.insert(\"{}\", \"{}\");", id, escaped_name).unwrap();
+        writeln!(output, "    db.insert(\"{id}\", \"{escaped_name}\");").unwrap();
     }
     
-    writeln!(output, "").unwrap();
+    writeln!(output).unwrap();
     writeln!(output, "    db").unwrap();
     writeln!(output, "}});").unwrap();
     
