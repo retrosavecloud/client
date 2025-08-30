@@ -11,12 +11,14 @@ use tracing::{info, debug};
 /// OAuth client for browser-based authentication
 pub struct BrowserOAuth {
     api_base_url: String,
+    #[allow(dead_code)]
     redirect_port: Option<u16>,
     state: Arc<RwLock<Option<OAuthState>>>,
 }
 
 /// OAuth state during flow
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct OAuthState {
     state: String,
     code_verifier: String,

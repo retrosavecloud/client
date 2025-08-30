@@ -9,6 +9,7 @@ pub struct RetroArch {
     pid: Option<u32>,
     save_directory: Option<String>,
     state_directory: Option<String>,
+    #[allow(dead_code)]
     config_path: Option<String>,
     current_core: Option<String>,
 }
@@ -150,6 +151,7 @@ impl RetroArch {
         }
         None
     }
+    #[allow(dead_code)]
     
     fn detect_current_core(&mut self) -> Option<String> {
         // Try to detect the currently loaded core from process info or recent history
@@ -171,6 +173,7 @@ impl RetroArch {
         }
         None
     }
+    #[allow(dead_code)]
     
     fn get_core_save_path(&self, core: &str) -> Option<PathBuf> {
         // Map cores to their save subdirectories
