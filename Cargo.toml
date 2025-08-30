@@ -62,7 +62,7 @@ enigo = "0.2"
 global-hotkey = "0.6"
 
 # Audio
-rodio = "0.19"
+rodio = { version = "0.19", default-features = false, features = ["vorbis", "wav", "mp3"] }
 
 # Networking
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "cookies"] }
