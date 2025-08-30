@@ -9,7 +9,7 @@ use base64::{Engine as _, engine::general_purpose};
 use serde::{Serialize, Deserialize};
 use sha2::{Sha256, Digest};
 use std::path::PathBuf;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Encrypted save file metadata
 #[derive(Debug, Clone, Serialize, Deserialize)]

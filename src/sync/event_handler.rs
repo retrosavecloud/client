@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, debug, warn};
 use crate::payment::{SubscriptionStatus, UsageStats, BackendSubscriptionTier, TierLimits, TierFeatures, TierPrice};
-use super::websocket::{WsMessage, SubscriptionLimits};
+use super::websocket::WsMessage;
 
 /// Callback types for different events
 pub type SubscriptionCallback = Arc<dyn Fn(SubscriptionStatus) + Send + Sync>;

@@ -60,7 +60,7 @@ pub struct LauncherManager {
 
 impl LauncherManager {
     pub fn new() -> Self {
-        let mut launchers: Vec<Box<dyn Launcher + Send + Sync>> = Vec::new();
+        let launchers: Vec<Box<dyn Launcher + Send + Sync>> = Vec::new();
         
         // Add LaunchBox support
         let launchbox = launchbox::LaunchBox::new();

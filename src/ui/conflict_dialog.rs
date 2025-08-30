@@ -1,4 +1,4 @@
-use egui::{Context, Window, Grid, Button, RichText, Color32, ScrollArea};
+use egui::{Context, Window, Grid, Button, RichText, Color32};
 use crate::sync::conflict_resolution::{SaveConflict, ResolutionAction, ConflictType};
 use std::sync::Arc;
 use tokio::sync::Mutex;

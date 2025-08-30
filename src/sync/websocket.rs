@@ -194,7 +194,7 @@ impl WebSocketClient {
     /// Send a message to the server
     pub async fn send_message(&self, message: WsMessage) -> Result<()> {
         let connection = self.connection.read().await;
-        if let Some(ws) = connection.as_ref() {
+        if let Some(_ws) = connection.as_ref() {
             let json = serde_json::to_string(&message)?;
             let mut ws = self.connection.write().await;
             if let Some(stream) = ws.as_mut() {

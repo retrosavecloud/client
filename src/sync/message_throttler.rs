@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tracing::{debug, warn};
+use tracing::debug;
 use serde_json::Value;
 
 /// Configuration for message throttling

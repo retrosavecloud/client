@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 use super::hasher::{hash_file, get_file_size};
 use super::compression::{Compressor, CompressionStats};
 use super::Database;
-use super::save_types::{SaveType, MemoryCardFormat};
+use super::save_types::SaveType;
 
 #[derive(Debug, Clone)]
 pub struct SaveEvent {

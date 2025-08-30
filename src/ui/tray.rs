@@ -84,7 +84,7 @@ impl SystemTray {
                         info!("Tray icon created successfully");
                         // Keep the tray icon alive by holding it in this thread
                         loop {
-                            if let Ok(msg) = control_receiver.recv() {
+                            if let Some(msg) = control_receiver.blocking_recv() {
                                 match msg {
                                     TrayControl::UpdateStatus(status) => {
                                         info!("Updating tray status: {}", status);

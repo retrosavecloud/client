@@ -97,7 +97,6 @@ impl GameCoverFetcher {
     /// Get cached cover if available
     pub fn get_cached_cover(game_id: &str) -> Option<Vec<u8>> {
         use std::fs;
-        use std::path::PathBuf;
         
         let cache_dir = dirs::cache_dir()?
             .join("retrosave")

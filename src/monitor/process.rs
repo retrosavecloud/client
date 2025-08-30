@@ -611,7 +611,7 @@ pub fn get_dolphin_game_name(pid: u32) -> Option<String> {
     None
 }
 
-fn get_dolphin_game_from_window_title(pid: u32) -> Option<String> {
+fn get_dolphin_game_from_window_title(_pid: u32) -> Option<String> {
     #[cfg(target_os = "linux")]
     {
         unsafe {

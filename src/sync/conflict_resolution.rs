@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{info, warn, debug};
+use tracing::{info, warn};
 
 /// Represents a conflict between local and cloud saves
 #[derive(Debug, Clone, Serialize, Deserialize)]

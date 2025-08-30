@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::storage::game_database::lookup_game_name;
 use retrosave_shared::{MemoryCardMetadata, GameInfo};
-use chrono::{NaiveDate, NaiveTime, NaiveDateTime, Utc};
+use chrono::{NaiveDate, NaiveTime, NaiveDateTime};
 use tracing::debug;
 
 /// PS2 Memory Card Parser

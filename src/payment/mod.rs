@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 /// Subscription tiers available
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
