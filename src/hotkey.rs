@@ -57,6 +57,7 @@ impl HotkeyManager {
     
     pub fn start_listening(self: Arc<Self>) {
         let sender = self.event_sender.clone();
+        let current_hotkey = self.current_hotkey.clone();
         
         std::thread::spawn(move || {
             info!("Hotkey listener thread started");
@@ -67,8 +68,8 @@ impl HotkeyManager {
                     debug!("Hotkey event received: {:?}", event);
                     
                     // Check if this is our save hotkey
-                    if let Some(current_hotkey) = self.current_hotkey.lock().unwrap().as_ref() {
-                        if event.id == current_hotkey.id() {
+                    if let Some(hotkey) = current_hotkey.lock().unwrap().as_ref() {
+                        if event.id == hotkey.id() {
                             info!("Save hotkey triggered");
                             let _ = sender.blocking_send(HotkeyEvent::SaveNow);
                         }
