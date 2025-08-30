@@ -138,7 +138,7 @@ async fn main() -> Result<()> {
     let notif_manager_clone = notif_manager.clone();
     let audio_feedback_clone = audio_feedback.clone();
     let cmd_sender_hotkey = cmd_sender.clone();
-    let (hotkey_update_tx, mut hotkey_update_rx) = tokio::sync::mpsc::channel::<String>(10);
+    let (hotkey_update_tx, mut hotkey_update_rx) = tokio::sync::mpsc::channel::<Option<String>>(10);
     let _sync_event_sender_clone = sync_event_sender.clone();
     let sync_service_clone = sync_service.clone();
     
@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
     let hotkey_manager_for_updates = hotkey_manager.clone();
     std::thread::spawn(move || {
         while let Some(new_hotkey) = hotkey_update_rx.blocking_recv() {
-            info!("Updating hotkey to: {}", new_hotkey);
+            info!("Updating hotkey to: {:?}", new_hotkey);
             if let Err(e) = hotkey_manager_for_updates.set_save_hotkey(new_hotkey) {
                 error!("Failed to update hotkey: {}", e);
             }
