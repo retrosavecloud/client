@@ -1,0 +1,59 @@
+# Environment variables - NEVER commit these!
+.env
+.env.local
+.env.*.local
+
+# Auth tokens and secrets
+auth.json
+*.key
+*.pem
+*.cert
+
+# Local database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Build outputs
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Debug and log files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS generated files
+Thumbs.db
+desktop.ini
+
+# Test coverage
+*.profraw
+*.profdata
+/coverage/
+
+# Temporary files
+*.tmp
+*.temp
+/tmp/
+
+# Local configuration
+config.local.toml
+settings.local.json
+
+# Credentials and sensitive data
+credentials/
+secrets/
+keyring/
