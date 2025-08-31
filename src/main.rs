@@ -1,5 +1,5 @@
 use anyhow::Result;
-use tracing::{info, error, debug};
+use tracing::{info, error, debug, warn};
 use tracing_subscriber;
 use tokio::sync::mpsc;
 
@@ -50,21 +50,68 @@ async fn main() -> Result<()> {
     // Initialize auth manager early so we can pass it to settings window
     let auth_manager = Arc::new(AuthManager::new(saved_settings.cloud_api_url.clone()));
     
-    // Initialize auth manager to load tokens from keyring
+    // Initialize auth manager to load tokens from keyring and sync settings
+    let mut synced_settings = saved_settings.clone();
     {
         let auth_manager_clone = auth_manager.clone();
+        let settings_for_sync = saved_settings.clone();
+        let settings_manager_for_sync = settings_manager.clone();
+        
+        // Use a channel to get the synced settings back
+        let (settings_tx, mut settings_rx) = mpsc::channel::<retrosave::ui::settings::Settings>(1);
+        
         tokio::spawn(async move {
             if let Err(e) = auth_manager_clone.init().await {
                 error!("Failed to initialize auth manager: {}", e);
+                // Send back original settings if auth fails
+                let _ = settings_tx.send(settings_for_sync).await;
             } else {
                 info!("Auth manager initialized, checking stored tokens...");
+                
+                // If authenticated, sync settings from cloud
+                if auth_manager_clone.is_authenticated().await {
+                    info!("User is authenticated, syncing settings from cloud...");
+                    let api = retrosave::sync::api::SyncApi::new(
+                        settings_for_sync.cloud_api_url.clone(),
+                        auth_manager_clone.clone(),
+                    );
+                    
+                    match retrosave::sync::settings_sync::sync_settings_from_cloud(&api, &settings_for_sync).await {
+                        Ok(merged_settings) => {
+                            info!("Settings synced from cloud");
+                            // Save the synced settings to local database
+                            if let Err(e) = settings_manager_for_sync.save_settings(&merged_settings).await {
+                                error!("Failed to save synced settings: {}", e);
+                            }
+                            let _ = settings_tx.send(merged_settings).await;
+                        }
+                        Err(e) => {
+                            error!("Failed to sync settings from cloud: {}", e);
+                            let _ = settings_tx.send(settings_for_sync).await;
+                        }
+                    }
+                } else {
+                    info!("User not authenticated, using local settings");
+                    let _ = settings_tx.send(settings_for_sync).await;
+                }
             }
         });
+        
+        // Wait for settings sync (with timeout)
+        if let Ok(Some(new_settings)) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            settings_rx.recv()
+        ).await {
+            synced_settings = new_settings;
+            info!("Using synced settings");
+        } else {
+            info!("Settings sync timed out, using local settings");
+        }
     }
     
     // Create settings window with settings manager and auth manager (sync service will be added later)
     let settings_window = Arc::new(SettingsWindow::with_auth_manager(
-        saved_settings,
+        synced_settings.clone(),  // Use synced settings instead of saved_settings
         settings_manager.clone(),
         auth_manager.clone()
     )?);
@@ -84,7 +131,7 @@ async fn main() -> Result<()> {
     let hotkey_manager = Arc::new(HotkeyManager::new(hotkey_sender)?);
     
     // Set up initial hotkey from settings
-    let settings = settings_window.get_settings();
+    let settings = synced_settings.clone();  // Use synced settings
     if settings.hotkey_enabled {
         hotkey_manager.set_save_hotkey(settings.save_hotkey.clone())?;
     }
@@ -110,6 +157,48 @@ async fn main() -> Result<()> {
         tokio::spawn(async move {
             if let Err(e) = sync_service_clone.start(sync_event_receiver).await {
                 error!("Sync service error: {}", e);
+            }
+        });
+        
+        // Register for settings updates via WebSocket
+        let sync_service_for_settings = sync_service.clone();
+        let settings_manager_for_ws = settings_manager.clone();
+        let settings_window_for_ws = settings_window.clone();
+        tokio::spawn(async move {
+            // Give sync service time to initialize
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            
+            // Wait for WebSocket to be ready (up to 10 seconds)
+            info!("Waiting for WebSocket to be ready for settings sync...");
+            
+            if let Some(event_handler) = sync_service_for_settings.wait_for_websocket(10).await {
+                info!("WebSocket ready, registering for settings updates");
+                event_handler.on_settings_update(move |cloud_settings| {
+                    info!("Received settings update via WebSocket");
+                    
+                    // Get current local settings
+                    let current_settings = settings_window_for_ws.get_settings();
+                    
+                    // Merge cloud settings with local settings
+                    let merged = retrosave::sync::settings_sync::merge_settings(&current_settings, cloud_settings);
+                    
+                    // Update settings in window
+                    settings_window_for_ws.update_settings(merged.clone());
+                    
+                    // Save to local database
+                    let settings_manager = settings_manager_for_ws.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = settings_manager.save_settings(&merged).await {
+                            error!("Failed to save WebSocket-updated settings: {}", e);
+                        } else {
+                            info!("Settings updated and saved from WebSocket");
+                        }
+                    });
+                }).await;
+                
+                info!("Registered for WebSocket settings updates");
+            } else {
+                warn!("Could not register for settings updates - WebSocket not available");
             }
         });
     }

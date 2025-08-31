@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, debug, warn};
 use crate::payment::{SubscriptionStatus, UsageStats, BackendSubscriptionTier, TierLimits, TierFeatures, TierPrice};
+use crate::sync::settings_sync::UserSettingsResponse;
 use super::websocket::WsMessage;
 
 /// Callback types for different events
@@ -9,6 +10,7 @@ pub type SubscriptionCallback = Arc<dyn Fn(SubscriptionStatus) + Send + Sync>;
 pub type UsageCallback = Arc<dyn Fn(UsageStats) + Send + Sync>;
 pub type DeviceCallback = Arc<dyn Fn(String, String) + Send + Sync>;
 pub type WarningCallback = Arc<dyn Fn(String) + Send + Sync>;
+pub type SettingsCallback = Arc<dyn Fn(UserSettingsResponse) + Send + Sync>;
 
 /// Event handler for WebSocket messages
 pub struct EventHandler {
@@ -17,6 +19,7 @@ pub struct EventHandler {
     device_added_listeners: Arc<RwLock<Vec<DeviceCallback>>>,
     device_removed_listeners: Arc<RwLock<Vec<DeviceCallback>>>,
     warning_listeners: Arc<RwLock<Vec<WarningCallback>>>,
+    settings_listeners: Arc<RwLock<Vec<SettingsCallback>>>,
 }
 
 impl EventHandler {
@@ -27,6 +30,7 @@ impl EventHandler {
             device_added_listeners: Arc::new(RwLock::new(Vec::new())),
             device_removed_listeners: Arc::new(RwLock::new(Vec::new())),
             warning_listeners: Arc::new(RwLock::new(Vec::new())),
+            settings_listeners: Arc::new(RwLock::new(Vec::new())),
         }
     }
     
@@ -72,6 +76,15 @@ impl EventHandler {
         F: Fn(String) + Send + Sync + 'static,
     {
         let mut listeners = self.warning_listeners.write().await;
+        listeners.push(Arc::new(callback));
+    }
+    
+    /// Register a callback for settings updates
+    pub async fn on_settings_update<F>(&self, callback: F)
+    where
+        F: Fn(UserSettingsResponse) + Send + Sync + 'static,
+    {
+        let mut listeners = self.settings_listeners.write().await;
         listeners.push(Arc::new(callback));
     }
     
@@ -164,6 +177,16 @@ impl EventHandler {
                 let listeners = self.warning_listeners.read().await;
                 for listener in listeners.iter() {
                     listener(message.clone());
+                }
+            }
+            
+            WsMessage::SettingsUpdated { settings } => {
+                info!("Received settings update from server");
+                debug!("Updated settings: {:?}", settings);
+                
+                let listeners = self.settings_listeners.read().await;
+                for listener in listeners.iter() {
+                    listener(settings.clone());
                 }
             }
             

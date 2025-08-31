@@ -7,6 +7,7 @@ use uuid::Uuid;
 use tracing::{debug, warn};
 use tokio::sync::mpsc;
 use crate::payment::{SubscriptionStatus, UsageStats};
+use crate::sync::settings_sync::{UserSettingsResponse, UpdateUserSettings};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
@@ -374,5 +375,50 @@ impl SyncApi {
 
         response.json().await
             .context("Failed to parse usage stats response")
+    }
+    
+    /// Fetch user settings from the API
+    pub async fn get_settings(&self) -> Result<UserSettingsResponse> {
+        let token = self.auth_manager.get_access_token().await
+            .ok_or_else(|| anyhow!("Not authenticated"))?;
+        
+        let response = self.client
+            .get(format!("{}/api/settings", self.base_url))
+            .bearer_auth(token)
+            .send()
+            .await?;
+        
+        let response = self.check_response(response).await?;
+        
+        if response.status().is_success() {
+            let settings: UserSettingsResponse = response.json().await?;
+            Ok(settings)
+        } else {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            Err(anyhow!("Failed to fetch settings: {}", error_text))
+        }
+    }
+    
+    /// Update user settings
+    pub async fn update_settings(&self, updates: UpdateUserSettings) -> Result<UserSettingsResponse> {
+        let token = self.auth_manager.get_access_token().await
+            .ok_or_else(|| anyhow!("Not authenticated"))?;
+        
+        let response = self.client
+            .put(format!("{}/api/settings", self.base_url))
+            .bearer_auth(token)
+            .json(&updates)
+            .send()
+            .await?;
+        
+        let response = self.check_response(response).await?;
+        
+        if response.status().is_success() {
+            let settings: UserSettingsResponse = response.json().await?;
+            Ok(settings)
+        } else {
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            Err(anyhow!("Failed to update settings: {}", error_text))
+        }
     }
 }

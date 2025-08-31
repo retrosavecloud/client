@@ -334,6 +334,12 @@ impl SettingsWindow {
         self.settings.lock().unwrap().clone()
     }
     
+    pub fn update_settings(&self, new_settings: Settings) {
+        let mut settings = self.settings.lock().unwrap();
+        *settings = new_settings;
+        info!("Settings updated from WebSocket");
+    }
+    
     fn setup_custom_fonts(ctx: &egui::Context) {
         let mut fonts = egui::FontDefinitions::default();
         
@@ -1053,6 +1059,8 @@ impl eframe::App for SettingsApp {
                     // Save directly using settings manager if available
                     if let Some(ref manager) = self.settings_manager {
                         let manager_clone = manager.clone();
+                        let api_client = self.api_client.clone();
+                        let settings_for_cloud = settings_to_save.clone();
                         
                         // Spawn a thread to do the async save without blocking UI
                         std::thread::spawn(move || {
@@ -1064,6 +1072,16 @@ impl eframe::App for SettingsApp {
                                     error!("Failed to save settings: {}", e);
                                 } else {
                                     info!("Settings successfully saved to database");
+                                    
+                                    // Also sync to cloud if authenticated
+                                    if let Some(ref api) = api_client {
+                                        use crate::sync::settings_sync;
+                                        if let Err(e) = settings_sync::push_settings_to_cloud(api, &settings_for_cloud).await {
+                                            error!("Failed to sync settings to cloud: {}", e);
+                                        } else {
+                                            info!("Settings synced to cloud");
+                                        }
+                                    }
                                 }
                             });
                         });

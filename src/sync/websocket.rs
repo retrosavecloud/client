@@ -106,6 +106,11 @@ pub enum WsMessage {
         percentage: f32,
         message: String,
     },
+    
+    /// Settings updated notification
+    SettingsUpdated {
+        settings: crate::sync::settings_sync::UserSettingsResponse,
+    },
 }
 
 /// Subscription limits for WebSocket messages
@@ -157,27 +162,49 @@ impl WebSocketClient {
     
     /// Connect to WebSocket server
     pub async fn connect(&self) -> Result<()> {
-        info!("Connecting to WebSocket server at {}", self.url);
+        info!("[DEBUG] WebSocketClient::connect: Starting connection to {}", self.url);
         
-        let (ws_stream, _) = connect_async(&self.url).await
+        info!("[DEBUG] WebSocketClient::connect: Calling connect_async...");
+        let (ws_stream, response) = connect_async(&self.url).await
             .context("Failed to connect to WebSocket")?;
+        info!("[DEBUG] WebSocketClient::connect: Connection established, response status: {:?}", response.status());
         
-        let mut connection = self.connection.write().await;
-        *connection = Some(ws_stream);
+        info!("[DEBUG] WebSocketClient::connect: Acquiring write lock on connection");
+        {
+            let mut connection = self.connection.write().await;
+            info!("[DEBUG] WebSocketClient::connect: Write lock acquired, storing stream");
+            *connection = Some(ws_stream);
+            info!("[DEBUG] WebSocketClient::connect: Stream stored, dropping write lock");
+        } // Explicitly drop the write lock here
         
         // Reset reconnect attempts on successful connection
-        let mut attempts = self.reconnect_attempts.write().await;
-        *attempts = 0;
+        info!("[DEBUG] WebSocketClient::connect: Resetting reconnect attempts");
+        {
+            let mut attempts = self.reconnect_attempts.write().await;
+            *attempts = 0;
+        } // Explicitly drop the attempts lock
         
         info!("WebSocket connected successfully");
         
         // Send authentication message if we have a token
         if let Some(token) = &self.token {
-            self.send_message(WsMessage::Auth { 
+            info!("[DEBUG] WebSocketClient::connect: Sending auth message");
+            match self.send_message(WsMessage::Auth { 
                 token: token.clone() 
-            }).await?;
+            }).await {
+                Ok(_) => {
+                    info!("[DEBUG] WebSocketClient::connect: Auth message sent successfully");
+                }
+                Err(e) => {
+                    error!("[DEBUG] WebSocketClient::connect: Failed to send auth message: {}", e);
+                    return Err(e);
+                }
+            }
+        } else {
+            info!("[DEBUG] WebSocketClient::connect: No token, skipping auth");
         }
         
+        info!("[DEBUG] WebSocketClient::connect: Connection complete, returning Ok");
         Ok(())
     }
     
@@ -193,36 +220,62 @@ impl WebSocketClient {
     
     /// Send a message to the server
     pub async fn send_message(&self, message: WsMessage) -> Result<()> {
+        info!("[DEBUG] send_message: Starting, acquiring read lock");
         let connection = self.connection.read().await;
+        info!("[DEBUG] send_message: Read lock acquired, checking connection");
+        
         if let Some(_ws) = connection.as_ref() {
+            info!("[DEBUG] send_message: Connection exists, serializing message");
             let json = serde_json::to_string(&message)?;
+            info!("[DEBUG] send_message: Message serialized, dropping read lock and acquiring write lock");
+            drop(connection); // Drop read lock before acquiring write lock
+            
             let mut ws = self.connection.write().await;
+            info!("[DEBUG] send_message: Write lock acquired");
+            
             if let Some(stream) = ws.as_mut() {
-                stream.send(Message::Text(json)).await
-                    .context("Failed to send WebSocket message")?;
-                debug!("Sent WebSocket message: {:?}", message);
+                info!("[DEBUG] send_message: Sending message to stream");
+                match stream.send(Message::Text(json)).await {
+                    Ok(_) => {
+                        info!("[DEBUG] send_message: Message sent successfully");
+                        debug!("Sent WebSocket message: {:?}", message);
+                    }
+                    Err(e) => {
+                        error!("[DEBUG] send_message: Failed to send: {}", e);
+                        return Err(anyhow::anyhow!("Failed to send WebSocket message: {}", e));
+                    }
+                }
+            } else {
+                error!("[DEBUG] send_message: Stream is None after acquiring write lock");
+                return Err(anyhow::anyhow!("WebSocket stream is None"));
             }
         } else {
+            error!("[DEBUG] send_message: Connection is None");
             return Err(anyhow::anyhow!("WebSocket not connected"));
         }
+        
+        info!("[DEBUG] send_message: Completed successfully");
         Ok(())
     }
     
     /// Start listening for messages
     pub async fn start_listening(self: Arc<Self>) {
-        info!("Starting WebSocket listener");
+        info!("[DEBUG] start_listening: Starting WebSocket listener, Arc strong_count: {}", Arc::strong_count(&self));
         
         // Spawn heartbeat task
         let client = self.clone();
+        info!("[DEBUG] start_listening: Spawning heartbeat task");
         tokio::spawn(async move {
+            info!("[DEBUG] Heartbeat task: Started");
             let mut heartbeat = interval(Duration::from_secs(30));
             loop {
                 heartbeat.tick().await;
                 if let Err(e) = client.send_message(WsMessage::Ping).await {
-                    debug!("Failed to send heartbeat: {}", e);
+                    debug!("[DEBUG] Heartbeat task: Failed to send heartbeat: {}", e);
                 }
             }
         });
+        info!("[DEBUG] start_listening: Heartbeat task spawned");
         
         // Main message loop
         loop {
