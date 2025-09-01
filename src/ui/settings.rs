@@ -26,17 +26,9 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        // Get API URL from environment or use default based on build mode
-        let cloud_api_url = std::env::var("RETROSAVE_API_URL")
-            .unwrap_or_else(|_| {
-                // In debug mode, use localhost
-                #[cfg(debug_assertions)]
-                return "http://localhost:8080".to_string();
-                
-                // In release mode, use production API
-                #[cfg(not(debug_assertions))]
-                return "https://api.retrosave.cloud".to_string();
-            });
+        // API URL is determined by environment variable or build configuration
+        // Users cannot change this - it's managed automatically
+        let cloud_api_url = Self::get_api_url();
 
         Self {
             auto_save_enabled: true,
@@ -53,6 +45,35 @@ impl Default for Settings {
             compression_enabled: true,
             compression_level: 3,
         }
+    }
+}
+
+impl Settings {
+    /// Get the API URL based on environment configuration
+    /// This is not user-configurable - it's determined automatically
+    pub fn get_api_url() -> String {
+        // First check environment variable (for development/testing)
+        if let Ok(url) = std::env::var("RETROSAVE_API_URL") {
+            return url;
+        }
+        
+        // Otherwise use build configuration
+        #[cfg(debug_assertions)]
+        {
+            // Development build - use local server
+            "http://localhost:8080".to_string()
+        }
+        #[cfg(not(debug_assertions))]
+        {
+            // Production build - use cloud API
+            "https://api.retrosave.cloud".to_string()
+        }
+    }
+    
+    /// Ensure API URL is always using the correct value
+    /// Call this when loading settings from disk to override any stored value
+    pub fn update_api_url(&mut self) {
+        self.cloud_api_url = Self::get_api_url();
     }
 }
 
@@ -1001,15 +1022,9 @@ impl eframe::App for SettingsApp {
             // Cloud sync settings if authenticated and enabled
             if self.is_authenticated && cloud_sync_enabled {
                 ui.indent("cloud_settings", |ui| {
-                    // API URL and auto sync
+                    // Auto sync option
                     {
                         let mut settings = self.settings.lock().unwrap();
-                        ui.horizontal(|ui| {
-                            ui.label("API URL:");
-                            ui.text_edit_singleline(&mut settings.cloud_api_url);
-                        });
-                        
-                        // Auto sync
                         ui.checkbox(&mut settings.cloud_auto_sync, "Automatically sync saves");
                     }
                     

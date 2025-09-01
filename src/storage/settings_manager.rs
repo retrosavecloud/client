@@ -69,6 +69,10 @@ impl SettingsManager {
             }
         }
         
+        // Always override API URL with the correct value based on environment
+        // This ensures users cannot modify it even if they edited the database directly
+        settings.update_api_url();
+        
         debug!("Loaded settings from database");
         Ok(settings)
     }
