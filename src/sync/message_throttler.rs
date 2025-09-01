@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tracing::debug;
+// Removed unused debug import
 use serde_json::Value;
 
 /// Configuration for message throttling
@@ -56,7 +56,7 @@ impl MessageDeduplicator {
         // Check if we've seen this message recently
         if let Some(last_seen) = self.seen_hashes.get(&hash) {
             if now.duration_since(*last_seen) < self.window {
-                debug!("Duplicate message detected, skipping");
+                // Duplicate message detected, skipping
                 return false;
             }
         }

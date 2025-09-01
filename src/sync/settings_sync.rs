@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use tracing::{info, warn, error, debug};
+use tracing::{warn, error};
 
 use crate::ui::settings::Settings;
 use super::api::SyncApi;
@@ -94,13 +94,13 @@ pub fn settings_to_update(settings: &Settings) -> UpdateUserSettings {
 
 /// Sync settings from cloud on startup
 pub async fn sync_settings_from_cloud(api: &SyncApi, local: &Settings) -> Result<Settings> {
-    info!("Syncing settings from cloud...");
+    // Sync settings from cloud
     
     match api.get_settings().await {
         Ok(cloud_settings) => {
-            debug!("Received cloud settings: {:?}", cloud_settings);
+            // Settings received from cloud
             let merged = merge_settings(local, cloud_settings);
-            info!("Settings synced from cloud successfully");
+            // Settings synced successfully
             Ok(merged)
         }
         Err(e) => {
@@ -113,13 +113,13 @@ pub async fn sync_settings_from_cloud(api: &SyncApi, local: &Settings) -> Result
 
 /// Push local settings to cloud
 pub async fn push_settings_to_cloud(api: &SyncApi, settings: &Settings) -> Result<()> {
-    info!("Pushing settings to cloud...");
+    // Push settings to cloud
     
     let updates = settings_to_update(settings);
     
     match api.update_settings(updates).await {
         Ok(_) => {
-            info!("Settings pushed to cloud successfully");
+            // Settings pushed successfully
             Ok(())
         }
         Err(e) => {

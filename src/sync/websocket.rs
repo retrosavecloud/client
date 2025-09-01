@@ -4,7 +4,7 @@ use futures_util::{StreamExt, SinkExt};
 use tokio::sync::{mpsc, RwLock};
 use std::sync::Arc;
 use serde::{Serialize, Deserialize};
-use tracing::{info, debug, warn, error};
+use tracing::{info, warn, error};
 use tokio::time::{Duration, interval};
 use super::event_handler::EventHandler;
 
@@ -162,23 +162,16 @@ impl WebSocketClient {
     
     /// Connect to WebSocket server
     pub async fn connect(&self) -> Result<()> {
-        info!("[DEBUG] WebSocketClient::connect: Starting connection to {}", self.url);
         
-        info!("[DEBUG] WebSocketClient::connect: Calling connect_async...");
-        let (ws_stream, response) = connect_async(&self.url).await
+        let (ws_stream, _response) = connect_async(&self.url).await
             .context("Failed to connect to WebSocket")?;
-        info!("[DEBUG] WebSocketClient::connect: Connection established, response status: {:?}", response.status());
         
-        info!("[DEBUG] WebSocketClient::connect: Acquiring write lock on connection");
         {
             let mut connection = self.connection.write().await;
-            info!("[DEBUG] WebSocketClient::connect: Write lock acquired, storing stream");
             *connection = Some(ws_stream);
-            info!("[DEBUG] WebSocketClient::connect: Stream stored, dropping write lock");
         } // Explicitly drop the write lock here
         
         // Reset reconnect attempts on successful connection
-        info!("[DEBUG] WebSocketClient::connect: Resetting reconnect attempts");
         {
             let mut attempts = self.reconnect_attempts.write().await;
             *attempts = 0;
@@ -188,23 +181,19 @@ impl WebSocketClient {
         
         // Send authentication message if we have a token
         if let Some(token) = &self.token {
-            info!("[DEBUG] WebSocketClient::connect: Sending auth message");
             match self.send_message(WsMessage::Auth { 
                 token: token.clone() 
             }).await {
                 Ok(_) => {
-                    info!("[DEBUG] WebSocketClient::connect: Auth message sent successfully");
                 }
                 Err(e) => {
-                    error!("[DEBUG] WebSocketClient::connect: Failed to send auth message: {}", e);
+                    error!("WebSocketClient::connect: Failed to send auth message: {}", e);
                     return Err(e);
                 }
             }
         } else {
-            info!("[DEBUG] WebSocketClient::connect: No token, skipping auth");
         }
         
-        info!("[DEBUG] WebSocketClient::connect: Connection complete, returning Ok");
         Ok(())
     }
     
@@ -220,62 +209,50 @@ impl WebSocketClient {
     
     /// Send a message to the server
     pub async fn send_message(&self, message: WsMessage) -> Result<()> {
-        info!("[DEBUG] send_message: Starting, acquiring read lock");
         let connection = self.connection.read().await;
-        info!("[DEBUG] send_message: Read lock acquired, checking connection");
         
         if let Some(_ws) = connection.as_ref() {
-            info!("[DEBUG] send_message: Connection exists, serializing message");
             let json = serde_json::to_string(&message)?;
-            info!("[DEBUG] send_message: Message serialized, dropping read lock and acquiring write lock");
             drop(connection); // Drop read lock before acquiring write lock
             
             let mut ws = self.connection.write().await;
-            info!("[DEBUG] send_message: Write lock acquired");
             
             if let Some(stream) = ws.as_mut() {
-                info!("[DEBUG] send_message: Sending message to stream");
                 match stream.send(Message::Text(json)).await {
                     Ok(_) => {
-                        info!("[DEBUG] send_message: Message sent successfully");
-                        debug!("Sent WebSocket message: {:?}", message);
+                        // Message sent successfully
                     }
                     Err(e) => {
-                        error!("[DEBUG] send_message: Failed to send: {}", e);
+                        error!("send_message: Failed to send: {}", e);
                         return Err(anyhow::anyhow!("Failed to send WebSocket message: {}", e));
                     }
                 }
             } else {
-                error!("[DEBUG] send_message: Stream is None after acquiring write lock");
+                error!("send_message: Stream is None after acquiring write lock");
                 return Err(anyhow::anyhow!("WebSocket stream is None"));
             }
         } else {
-            error!("[DEBUG] send_message: Connection is None");
+            error!("send_message: Connection is None");
             return Err(anyhow::anyhow!("WebSocket not connected"));
         }
         
-        info!("[DEBUG] send_message: Completed successfully");
         Ok(())
     }
     
     /// Start listening for messages
     pub async fn start_listening(self: Arc<Self>) {
-        info!("[DEBUG] start_listening: Starting WebSocket listener, Arc strong_count: {}", Arc::strong_count(&self));
         
         // Spawn heartbeat task
         let client = self.clone();
-        info!("[DEBUG] start_listening: Spawning heartbeat task");
         tokio::spawn(async move {
-            info!("[DEBUG] Heartbeat task: Started");
             let mut heartbeat = interval(Duration::from_secs(30));
             loop {
                 heartbeat.tick().await;
-                if let Err(e) = client.send_message(WsMessage::Ping).await {
-                    debug!("[DEBUG] Heartbeat task: Failed to send heartbeat: {}", e);
+                if let Err(_) = client.send_message(WsMessage::Ping).await {
+                    // Heartbeat failed, will be handled by reconnect logic
                 }
             }
         });
-        info!("[DEBUG] start_listening: Heartbeat task spawned");
         
         // Main message loop
         loop {
@@ -297,7 +274,7 @@ impl WebSocketClient {
                     Some(Ok(Message::Text(text))) => {
                         match serde_json::from_str::<WsMessage>(&text) {
                             Ok(message) => {
-                                debug!("Received WebSocket message: {:?}", message);
+                                // Process message without logging
                                 
                                 // Process message through event handler
                                 let event_handler = self.event_handler.clone();
@@ -317,7 +294,7 @@ impl WebSocketClient {
                         }
                     }
                     Some(Ok(Message::Binary(_))) => {
-                        debug!("Received binary WebSocket message");
+                        // Binary message received
                     }
                     Some(Ok(Message::Ping(data))) => {
                         if let Some(ws) = connection.as_mut() {
@@ -325,7 +302,7 @@ impl WebSocketClient {
                         }
                     }
                     Some(Ok(Message::Pong(_))) => {
-                        debug!("Received pong");
+                        // Pong received
                     }
                     Some(Ok(Message::Close(_))) => {
                         info!("WebSocket closed by server");
@@ -355,7 +332,7 @@ impl WebSocketClient {
         }
         
         let delay = Duration::from_secs(2_u64.pow((*attempts).min(5)));
-        info!("Reconnecting to WebSocket in {:?} (attempt {})", delay, attempts);
+        info!("Reconnecting to WebSocket (attempt {})", attempts);
         tokio::time::sleep(delay).await;
         
         self.connect().await

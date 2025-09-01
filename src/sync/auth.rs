@@ -64,9 +64,9 @@ impl AuthManager {
 
     /// Initialize by loading tokens from keyring
     pub async fn init(&self) -> Result<()> {
-        info!("Initializing auth manager, checking for stored tokens...");
+        // Check for stored tokens
         if let Some(tokens) = self.load_tokens_from_keyring()? {
-            info!("Found stored tokens, validating with API...");
+            // Validate stored tokens
             
             // Try to get user info with stored token
             if let Ok(user) = self.fetch_user_info(&tokens.access_token).await {
@@ -74,13 +74,13 @@ impl AuthManager {
                 state.is_authenticated = true;
                 state.user = Some(user.clone());
                 state.tokens = Some(tokens);
-                info!("Authenticated from stored tokens: {}", user.email);
+                // Successfully authenticated with stored tokens
             } else {
-                info!("Stored token validation failed, trying to refresh...");
+                // Token expired, attempting refresh
                 // Token might be expired, try to refresh
                 if let Ok(new_tokens) = self.refresh_token(&tokens.refresh_token).await {
                     self.store_tokens(&new_tokens)?;
-                    info!("Refreshed expired tokens successfully");
+                    // Tokens refreshed successfully
                     // Re-fetch user info with new token
                     match self.fetch_user_info(&new_tokens.access_token).await {
                         Ok(user) => {
@@ -88,7 +88,7 @@ impl AuthManager {
                             state.is_authenticated = true;
                             state.user = Some(user.clone());
                             state.tokens = Some(new_tokens);
-                            info!("Authenticated after token refresh: {}", user.email);
+                            // Successfully authenticated after refresh
                         },
                         Err(_) => {
                             // Still update tokens and mark as authenticated since refresh worked
@@ -98,13 +98,13 @@ impl AuthManager {
                         }
                     }
                 } else {
-                    info!("Token refresh failed, clearing invalid tokens");
+                    // Refresh failed, clearing invalid tokens
                     // Clear invalid tokens
                     self.clear_tokens()?;
                 }
             }
         } else {
-            info!("No stored tokens found in keyring");
+            // No stored tokens found
         }
         Ok(())
     }
@@ -158,7 +158,7 @@ impl AuthManager {
         state.user = Some(register_response.user);
         state.tokens = Some(tokens);
 
-        info!("Successfully registered and authenticated");
+        // Successfully registered and authenticated
         Ok(())
     }
 

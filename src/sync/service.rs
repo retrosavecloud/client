@@ -132,24 +132,17 @@ impl SyncService {
         }
         
         // Initialize WebSocket if authenticated
-        info!("[DEBUG] start: Checking auth state for WebSocket init");
         let auth_state = self.auth_manager.get_state().await;
-        info!("[DEBUG] start: Auth state - is_authenticated: {}", auth_state.is_authenticated);
         if auth_state.is_authenticated {
             if let Some(tokens) = auth_state.tokens {
-                info!("[DEBUG] start: Have tokens, calling init_websocket");
                 let service_arc = self.clone();
-                info!("[DEBUG] start: Created Arc clone of service");
                 if let Err(e) = service_arc.init_websocket(tokens.access_token).await {
                     warn!("[DEBUG] start: Failed to initialize WebSocket: {}", e);
                 } else {
-                    info!("[DEBUG] start: init_websocket completed successfully");
                 }
             } else {
-                info!("[DEBUG] start: Authenticated but no tokens available");
             }
         } else {
-            info!("[DEBUG] start: Not authenticated, skipping WebSocket init");
         }
 
         // Spawn periodic sync task
@@ -225,26 +218,19 @@ impl SyncService {
                 }
                 
                 SyncEvent::AuthChanged(is_authenticated) => {
-                    info!("[DEBUG] AuthChanged event: authenticated={}", is_authenticated);
                     if is_authenticated {
                         // Clear game cache to refresh from server
-                        info!("[DEBUG] AuthChanged: Clearing game cache");
                         self.game_cache.write().await.clear();
                         
                         // Initialize WebSocket
-                        info!("[DEBUG] AuthChanged: Getting auth state for WebSocket init");
                         let auth_state = self.auth_manager.get_state().await;
                         if let Some(tokens) = auth_state.tokens {
-                            info!("[DEBUG] AuthChanged: Have tokens, calling init_websocket");
                             let service_arc = self.clone();
-                            info!("[DEBUG] AuthChanged: Created Arc clone of service");
                             if let Err(e) = service_arc.init_websocket(tokens.access_token).await {
                                 warn!("[DEBUG] AuthChanged: Failed to initialize WebSocket: {}", e);
                             } else {
-                                info!("[DEBUG] AuthChanged: init_websocket completed successfully");
                             }
                         } else {
-                            info!("[DEBUG] AuthChanged: No tokens available despite being authenticated");
                         }
                         
                         // Trigger sync on login
@@ -291,9 +277,11 @@ impl SyncService {
         
         // Upload pending saves
         let upload_result = self.process_upload_queue().await;
+        let uploads = upload_result.as_ref().copied().unwrap_or(0);
         
         // Download new saves
         let download_result = self.download_new_saves().await;
+        let downloads = 0; // TODO: Track download count in download_new_saves
         
         // Update status
         {
@@ -307,12 +295,15 @@ impl SyncService {
                 warn!("Sync completed with errors");
             }
         }
+        
+        // Notify sync completed via WebSocket
+        self.notify_sync_completed(uploads, downloads).await;
 
         Ok(())
     }
 
     /// Process upload queue
-    async fn process_upload_queue(&self) -> Result<()> {
+    async fn process_upload_queue(&self) -> Result<usize> {
         let mut processed = 0;
         
         loop {
@@ -425,6 +416,14 @@ impl SyncService {
             processed += 1;
             info!("Uploaded save for {}", task.game_name);
             
+            // Notify via WebSocket that a save was uploaded
+            self.notify_save_uploaded(
+                cloud_game_id.to_string(),
+                task.game_name.clone(),
+                task.emulator.clone(),
+                upload_response.save_id.to_string()
+            ).await;
+            
             // Update status
             {
                 let mut status = self.status.write().await;
@@ -451,7 +450,7 @@ impl SyncService {
             }
         }
         
-        Ok(())
+        Ok(processed)
     }
 
     /// Download new saves from cloud
@@ -956,51 +955,38 @@ impl SyncService {
     
     /// Get the WebSocket event handler for registering callbacks
     pub async fn get_event_handler(&self) -> Option<Arc<super::EventHandler>> {
-        info!("[DEBUG] get_event_handler: Acquiring read lock on self.websocket");
         let ws = self.websocket.read().await;
-        info!("[DEBUG] get_event_handler: Read lock acquired, WebSocket present: {}", ws.is_some());
         
         if ws.is_none() {
-            info!("[DEBUG] get_event_handler: WebSocket is None - client not initialized");
         }
         
         let handler = ws.as_ref().map(|client| {
-            info!("[DEBUG] get_event_handler: Getting event handler from client");
             let h = client.event_handler();
-            info!("[DEBUG] get_event_handler: Event handler retrieved from WebSocket client");
             h
         });
-        info!("[DEBUG] get_event_handler: Returning event handler: {}", handler.is_some());
         handler
     }
     
     /// Wait for WebSocket to be ready and return event handler
     pub async fn wait_for_websocket(&self, timeout_secs: u64) -> Option<Arc<super::EventHandler>> {
-        info!("[DEBUG] wait_for_websocket: Starting wait with timeout of {} seconds", timeout_secs);
         let start = std::time::Instant::now();
         let timeout = std::time::Duration::from_secs(timeout_secs);
         
         let mut iteration = 0;
         while start.elapsed() < timeout {
             iteration += 1;
-            info!("[DEBUG] wait_for_websocket: Iteration {}, elapsed: {:?}", iteration, start.elapsed());
             
             let ws = self.websocket.read().await;
             let has_ws = ws.is_some();
-            info!("[DEBUG] wait_for_websocket: WebSocket present: {}", has_ws);
             drop(ws);
             
             if has_ws {
-                info!("[DEBUG] wait_for_websocket: WebSocket exists, getting event handler");
                 if let Some(handler) = self.get_event_handler().await {
-                    info!("[DEBUG] wait_for_websocket: Event handler obtained successfully");
                     return Some(handler);
                 } else {
-                    info!("[DEBUG] wait_for_websocket: Event handler was None despite WebSocket existing");
                 }
             }
             
-            info!("[DEBUG] wait_for_websocket: WebSocket not ready, sleeping 500ms");
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
         
@@ -1065,7 +1051,7 @@ impl SyncService {
         }
         
         info!("Retrying failed uploads...");
-        self.process_upload_queue().await
+        self.process_upload_queue().await.map(|_| ())
     }
     
     /// Save upload queue to database for persistence
@@ -1199,69 +1185,49 @@ impl SyncService {
     
     /// Initialize WebSocket connection
     async fn init_websocket(self: Arc<Self>, token: String) -> Result<()> {
-        info!("[DEBUG] init_websocket: Starting initialization with token");
         let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<WsMessage>();
-        info!("[DEBUG] init_websocket: Created message channels");
         
         let api_url = self.api.base_url.clone();
-        info!("[DEBUG] init_websocket: API URL: {}", api_url);
         
         let mut client = WebSocketClient::new(api_url, ws_tx);
-        info!("[DEBUG] init_websocket: Created WebSocketClient instance");
         
         client.set_token(token).await;
-        info!("[DEBUG] init_websocket: Token set on client");
         
         // Connect to server
-        info!("[DEBUG] init_websocket: Attempting to connect...");
         match client.connect().await {
             Ok(_) => {
-                info!("[DEBUG] init_websocket: client.connect() returned Ok");
             }
             Err(e) => {
                 warn!("[DEBUG] init_websocket: client.connect() returned Err: {}", e);
                 return Err(e);
             }
         }
-        info!("[DEBUG] init_websocket: Connection successful, creating Arc");
         
         let client = Arc::new(client);
-        info!("[DEBUG] init_websocket: Arc created for client, strong_count: {}", Arc::strong_count(&client));
         
         // Store client BEFORE returning so it's available immediately
         {
-            info!("[DEBUG] init_websocket: Acquiring write lock on self.websocket");
-            info!("[DEBUG] init_websocket: self Arc strong_count: {}", Arc::strong_count(&self));
             let mut ws = self.websocket.write().await;
-            info!("[DEBUG] init_websocket: Write lock acquired");
             let was_none = ws.is_none();
-            info!("[DEBUG] init_websocket: Current websocket state - is_none: {}", was_none);
             
             // Store the client
             let client_for_storage = client.clone();
-            info!("[DEBUG] init_websocket: Created clone for storage, client strong_count now: {}", Arc::strong_count(&client));
             *ws = Some(client_for_storage);
             
-            info!("[DEBUG] init_websocket: Client assigned to websocket field");
             let is_none_now = ws.is_none();
             info!("WebSocket client stored in service (was_none: {}, is_none_now: {})", was_none, is_none_now);
             
             // Double-check the storage worked
             if let Some(stored_client) = ws.as_ref() {
-                info!("[DEBUG] init_websocket: Confirmed client is stored, Arc strong_count: {}", Arc::strong_count(stored_client));
             } else {
                 error!("[DEBUG] init_websocket: ERROR - Client not found after storage!");
             }
             
-            info!("[DEBUG] init_websocket: Write lock will be dropped");
         }
-        info!("[DEBUG] init_websocket: Write lock dropped");
         
         // Verify the WebSocket was actually stored
         {
-            info!("[DEBUG] init_websocket: Verifying WebSocket storage");
             let ws_check = self.websocket.read().await;
-            info!("[DEBUG] init_websocket: Verification - WebSocket is_some: {}", ws_check.is_some());
             if ws_check.is_none() {
                 error!("[DEBUG] init_websocket: CRITICAL - WebSocket was not stored despite assignment!");
             }
@@ -1270,33 +1236,23 @@ impl SyncService {
         info!("WebSocket client initialized and stored successfully");
         
         // Start listening for messages in background
-        info!("[DEBUG] init_websocket: Spawning listener task");
         let client_clone = client.clone();
         tokio::spawn(async move {
-            info!("[DEBUG] Listener task: Starting WebSocket listening");
             client_clone.start_listening().await;
-            info!("[DEBUG] Listener task: WebSocket listening ended");
         });
-        info!("[DEBUG] init_websocket: Listener task spawned");
         
         // Handle incoming WebSocket messages in background
-        info!("[DEBUG] init_websocket: Spawning message handler task");
         let sync_service_arc = self.clone();
         tokio::spawn(async move {
-            info!("[DEBUG] Message handler: Starting to listen for messages");
             while let Some(msg) = ws_rx.recv().await {
-                info!("[DEBUG] Message handler: Received message: {:?}", msg);
                 let service = sync_service_arc.clone();
                 tokio::spawn(async move {
                     service.handle_ws_message(msg).await;
                 });
             }
-            info!("[DEBUG] Message handler: Channel closed, exiting");
         });
-        info!("[DEBUG] init_websocket: Message handler task spawned");
         
         info!("WebSocket connected and listening");
-        info!("[DEBUG] init_websocket: Returning Ok(())");
         Ok(())
     }
     
@@ -1329,6 +1285,9 @@ impl SyncService {
             WsMessage::SyncCompleted { device_name, uploads, downloads, .. } => {
                 info!("Device {} completed sync: {} uploads, {} downloads", 
                       device_name, uploads, downloads);
+            }
+            WsMessage::Pong => {
+                // Heartbeat response - no logging needed
             }
             _ => {
                 debug!("Received WebSocket message: {:?}", msg);
