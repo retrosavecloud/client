@@ -225,7 +225,7 @@ pub async fn start_monitoring_with_sync(
                     "PCSX2" => {
                     if let Some(save_dir) = process::get_pcsx2_save_directory() {
                         let save_dir = PathBuf::from(save_dir);
-                        match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                        match SaveWatcher::new_with_emulator(save_dir.clone(), database.clone(), "PCSX2".to_string()) {
                             Ok((mut watcher, receiver)) => {
                                 if let Err(e) = watcher.start().await {
                                     warn!("Failed to start save watcher: {}", e);
@@ -246,7 +246,7 @@ pub async fn start_monitoring_with_sync(
                             let dolphin = crate::emulators::dolphin::Dolphin::new();
                             if let Some(save_dir) = dolphin.get_save_directory() {
                                 let save_dir = PathBuf::from(save_dir);
-                                match SaveWatcher::new(save_dir.clone(), database.clone()) {
+                                match SaveWatcher::new_with_emulator(save_dir.clone(), database.clone(), "Dolphin".to_string()) {
                                     Ok((mut watcher, receiver)) => {
                                         if let Err(e) = watcher.start().await {
                                             warn!("Failed to start save watcher: {}", e);

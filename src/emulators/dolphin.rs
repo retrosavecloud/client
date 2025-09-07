@@ -107,19 +107,40 @@ impl Dolphin {
         if let Some(ref save_dir) = self.save_directory {
             let gc_path = PathBuf::from(save_dir);
             
-            // Look for memory card files (MemoryCardA.raw, MemoryCardB.raw)
+            // Check for GCI folder format (most common)
+            for region in &["USA", "EUR", "JAP", "JPN"] {
+                for card in &["Card A", "Card B"] {
+                    let gci_folder = gc_path.join(region).join(card);
+                    if gci_folder.exists() {
+                        // Add all .gci files in the folder
+                        if let Ok(entries) = std::fs::read_dir(&gci_folder) {
+                            for entry in entries.flatten() {
+                                let path = entry.path();
+                                if path.extension().map_or(false, |e| e == "gci") {
+                                    debug!("Found GCI save file: {:?}", path);
+                                    save_files.push(path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Also check for raw memory card format
             for card in &["MemoryCardA.raw", "MemoryCardB.raw"] {
                 let card_path = gc_path.join(card);
                 if card_path.exists() {
+                    debug!("Found raw memory card: {:?}", card_path);
                     save_files.push(card_path);
                 }
             }
             
-            // Look for region-specific memory cards
-            for region in &["USA", "EUR", "JAP"] {
+            // Look for region-specific raw memory cards
+            for region in &["USA", "EUR", "JAP", "JPN"] {
                 for card in &["MemoryCardA", "MemoryCardB"] {
                     let card_path = gc_path.join(format!("{}.{}.raw", card, region));
                     if card_path.exists() {
+                        debug!("Found region-specific memory card: {:?}", card_path);
                         save_files.push(card_path);
                     }
                 }
@@ -189,10 +210,13 @@ impl Emulator for Dolphin {
                 tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
                 debug!("Checking for save changes in {}", save_dir);
                 
-                // Check for GameCube memory cards
+                // Check for GameCube memory cards and GCI files
                 let save_files = self.detect_save_files();
-                for save_file in save_files {
-                    debug!("Found save file: {:?}", save_file);
+                if !save_files.is_empty() {
+                    info!("Found {} Dolphin save files", save_files.len());
+                    for save_file in save_files {
+                        debug!("  - {:?}", save_file);
+                    }
                 }
                 
                 // Check for save states if directory exists

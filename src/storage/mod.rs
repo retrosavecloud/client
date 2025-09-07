@@ -6,8 +6,10 @@ pub mod compression;
 pub mod save_types;
 pub mod ps2_memory_card;
 pub mod game_database;
+pub mod gamecube_database;
 pub mod memory_card_tracker;
 pub mod game_cover_fetcher;
+pub mod gci_parser;
 
 pub use database::{Database, Game, Save};
 pub use watcher::{SaveWatcher, SaveEvent, SaveBackupManager};

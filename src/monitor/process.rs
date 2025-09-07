@@ -702,13 +702,24 @@ fn get_dolphin_game_from_window_title(_pid: u32) -> Option<String> {
                                 .to_string();
                             x11::xlib::XFree(title_prop as *mut _);
                             
-                            // Dolphin window title format: "Game Title | Dolphin"
-                            if let Some(game_part) = title.split(" | ").next() {
-                                if !game_part.is_empty() && game_part != "Dolphin" {
+                            // Dolphin window title format: "Dolphin {Version} | {CPU} | {Backend} | {Game Title}"
+                            // Example: "Dolphin 2506a | JIT64 DC | OpenGL | HLE | The Legend of Zelda: The Wind Waker"
+                            let parts: Vec<&str> = title.split(" | ").collect();
+                            if parts.len() >= 4 {
+                                // The game title is usually the last part
+                                let game_title = parts.last().unwrap_or(&"");
+                                if !game_title.is_empty() && 
+                                   !game_title.starts_with("Dolphin") && 
+                                   *game_title != "dolphin-emu" {
                                     x11::xlib::XFree(children as *mut _);
                                     x11::xlib::XCloseDisplay(display);
-                                    return Some(game_part.to_string());
+                                    return Some(game_title.to_string());
                                 }
+                            } else if parts.len() == 1 && !title.starts_with("Dolphin") && title != "dolphin-emu" {
+                                // Sometimes just the game title is shown
+                                x11::xlib::XFree(children as *mut _);
+                                x11::xlib::XCloseDisplay(display);
+                                return Some(title);
                             }
                         }
                     }

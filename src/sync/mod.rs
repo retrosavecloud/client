@@ -8,8 +8,6 @@ pub mod message_throttler;
 pub mod conflict_resolution;
 pub mod settings_sync;
 
-#[cfg(test)]
-mod test_websocket;
 
 pub use auth::AuthManager;
 pub use api::SyncApi;
