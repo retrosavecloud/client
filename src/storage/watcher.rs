@@ -33,12 +33,21 @@ pub struct SaveWatcher {
     current_game_name: Arc<RwLock<Option<String>>>,
     last_event_times: Arc<Mutex<HashMap<PathBuf, Instant>>>,
     memory_card_tracker: Arc<Mutex<crate::storage::memory_card_tracker::MemoryCardTracker>>,
+    emulator_name: String,
 }
 
 impl SaveWatcher {
     pub fn new(
         save_dir: PathBuf,
         database: Arc<Database>,
+    ) -> Result<(Self, mpsc::Receiver<SaveEvent>)> {
+        Self::new_with_emulator(save_dir, database, "Unknown".to_string())
+    }
+    
+    pub fn new_with_emulator(
+        save_dir: PathBuf,
+        database: Arc<Database>,
+        emulator_name: String,
     ) -> Result<(Self, mpsc::Receiver<SaveEvent>)> {
         let (sender, receiver) = mpsc::channel(100);
         
@@ -51,6 +60,7 @@ impl SaveWatcher {
             current_game_name: Arc::new(RwLock::new(None)),
             last_event_times: Arc::new(Mutex::new(HashMap::new())),
             memory_card_tracker: Arc::new(Mutex::new(crate::storage::memory_card_tracker::MemoryCardTracker::new())),
+            emulator_name,
         };
         
         Ok((watcher, receiver))
@@ -89,8 +99,7 @@ impl SaveWatcher {
                             };
                             
                             // Detect save type and check if empty
-                            let emulator_name = "PCSX2";
-                            let mut save_type = SaveType::detect(path, emulator_name);
+                            let mut save_type = SaveType::detect(path, &self.emulator_name);
                             let mut is_empty = false;
                             
                             if let SaveType::MemoryCard { ref mut format, ref mut contains_saves, ref mut save_count } = save_type {
@@ -120,6 +129,17 @@ impl SaveWatcher {
                                 } else {
                                     None
                                 }
+                            } else if path.extension().map_or(false, |e| e == "gci") {
+                                // Extract game ID from GCI file
+                                if let Some(gci) = crate::storage::gci_parser::GCIFile::parse(path) {
+                                    // Combine game code and maker code for full ID (e.g., "GZLE01")
+                                    Some(format!("{}{}", gci.game_code, gci.maker_code))
+                                } else {
+                                    // Try to extract from filename
+                                    path.file_name()
+                                        .and_then(|name| name.to_str())
+                                        .and_then(|name| crate::storage::gci_parser::GCIFile::extract_game_id_from_filename(name))
+                                }
                             } else {
                                 None
                             };
@@ -131,7 +151,7 @@ impl SaveWatcher {
                                 file_size: std::fs::metadata(path)?.len(),
                                 game_name,
                                 game_id,
-                                emulator: emulator_name.to_string(),
+                                emulator: self.emulator_name.clone(),
                                 save_type,
                                 is_empty,
                             }).await;
@@ -164,6 +184,7 @@ impl SaveWatcher {
         let current_game_name = self.current_game_name.clone();
         let last_event_times = self.last_event_times.clone();
         let memory_card_tracker = self.memory_card_tracker.clone();
+        let emulator_name = self.emulator_name.clone();
         
         // Spawn handler for file events
         tokio::spawn(async move {
@@ -176,6 +197,7 @@ impl SaveWatcher {
                     &current_game_name,
                     &last_event_times,
                     &memory_card_tracker,
+                    &emulator_name,
                 ).await {
                     error!("Error handling file event: {}", e);
                 }
@@ -220,6 +242,7 @@ impl SaveWatcher {
         current_game_name: &Arc<RwLock<Option<String>>>,
         last_event_times: &Arc<Mutex<HashMap<PathBuf, Instant>>>,
         memory_card_tracker: &Arc<Mutex<crate::storage::memory_card_tracker::MemoryCardTracker>>,
+        emulator_name: &str,
     ) -> Result<()> {
         const DEBOUNCE_DURATION: Duration = Duration::from_secs(3); // 3 seconds to group PCSX2's multiple writes during save
         
@@ -351,8 +374,22 @@ impl SaveWatcher {
                             } else {
                                 detected_game_name
                             }
+                        } else if path.extension().map_or(false, |e| e == "gci") {
+                            // For GameCube GCI files, extract game info from the file itself
+                            if let Some(gci) = crate::storage::gci_parser::GCIFile::parse(&path) {
+                                let game_id = gci.get_game_id();
+                                let game_name = crate::storage::gamecube_database::lookup_gamecube_game_name(&game_id);
+                                info!("Extracted game from GCI: {} (ID: {})", game_name, game_id);
+                                game_name
+                            } else {
+                                // Fallback if GCI parsing fails
+                                let current = current_game_name.read().await;
+                                current.clone().unwrap_or_else(|| {
+                                    Self::extract_game_name(&path, save_dir)
+                                })
+                            }
                         } else {
-                            // For non-PS2 saves, use the old approach for now
+                            // For other saves, use the old approach
                             let current = current_game_name.read().await;
                             current.clone().unwrap_or_else(|| {
                                 Self::extract_game_name(&path, save_dir)
@@ -360,8 +397,6 @@ impl SaveWatcher {
                         };
                         
                         // Detect save type
-                        // TODO: Get actual emulator name from context
-                        let emulator_name = "PCSX2"; // For now, hardcoded
                         let mut save_type = SaveType::detect(&path, emulator_name);
                         
                         // Check if memory card is empty
@@ -388,6 +423,17 @@ impl SaveWatcher {
                                 .get(&path)
                                 .and_then(|state| state.saves.values().next())
                                 .map(|save| save.game_id.clone())
+                            } else if path.extension().map_or(false, |e| e == "gci") {
+                                // Extract game ID from GCI file
+                                if let Some(gci) = crate::storage::gci_parser::GCIFile::parse(&path) {
+                                    // Combine maker code and game code for full ID (e.g., "01GZLE" -> "GZLE01")
+                                    Some(format!("{}{}", gci.game_code, gci.maker_code))
+                                } else {
+                                    // Try to extract from filename pattern
+                                    path.file_name()
+                                        .and_then(|name| name.to_str())
+                                        .and_then(|name| crate::storage::gci_parser::GCIFile::extract_game_id_from_filename(name))
+                                }
                         } else {
                             None
                         };
@@ -442,7 +488,8 @@ impl SaveWatcher {
         if let Some(extension) = path.extension() {
             let ext = extension.to_string_lossy().to_lowercase();
             // PCSX2 memory cards (.ps2) and save states (.p2s)
-            matches!(ext.as_str(), "ps2" | "p2s" | "mcd" | "mcr")
+            // Dolphin GCI files (.gci) and raw memory cards (.raw)
+            matches!(ext.as_str(), "ps2" | "p2s" | "mcd" | "mcr" | "gci" | "raw")
         } else {
             false
         }

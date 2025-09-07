@@ -334,6 +334,22 @@ impl SyncService {
                 }
                 
                 game_id
+            } else if task.emulator.to_lowercase() == "dolphin" {
+                // Check if it's a GCI file
+                let path = std::path::Path::new(&task.file_path);
+                if path.extension().map_or(false, |e| e == "gci") {
+                    // Extract game ID from GCI file
+                    if let Some(gci) = crate::storage::gci_parser::GCIFile::parse(&task.file_path) {
+                        let game_id = gci.get_game_id();
+                        info!("Extracted game_id {} from GCI file for '{}'", game_id, task.game_name);
+                        Some(game_id)
+                    } else {
+                        warn!("Could not parse GCI file to extract game_id for '{}'", task.game_name);
+                        None
+                    }
+                } else {
+                    None
+                }
             } else {
                 None
             };
